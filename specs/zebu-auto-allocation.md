@@ -57,9 +57,11 @@ zs5：
   │
   ├─ 5. 执行Module维度分配（allocateModules）
   │     ├─ requestedModules >= 4: 优先分配完整Unit → 分配剩余Module
-  │     └─ requestedModules < 4:  从某Unit的M0开始连续分配
+  │     └─ requestedModules < 4:  在某个Unit内连续分配（支持M3→M0回转）
   │
-  └─ 6. 将分配结果转换为设备名称输出
+  ├─ 6. 将分配结果转换为设备名称输出
+  │
+  └─ 7. 截取输出至实际请求数量（非倍数场景）
 ```
 
 ### 步骤详解
@@ -126,6 +128,12 @@ zs5：
 - zs3/zs4: Module `U{u}.M{m}` → `U{u}.HM{m*2}`, `U{u}.HM{m*2+1}`
 - zs5: Module `U{u}.M{m}` → `U{u}.M{m}.S0`, `U{u}.M{m}.S1`, `U{u}.M{m}.S2`, `U{u}.M{m}.S3`
 
+#### 步骤5: 截取输出
+
+当请求数量不是 `subModulesPerModule` 的倍数时，步骤4中 `modulesToNames` 会输出最后一个Module的全部子模块，导致返回数量超过请求。因此在输出前需截取至实际请求的数量 `requestedCount`。
+
+例如：zs3申请3个HalfModule → 分配2个Module → modulesToNames输出4个HalfModule → 截取前3个返回。
+
 ### 分配示例
 
 #### 示例1: zs3 申请2个HalfModule（1个Module，< 4规则）
@@ -134,7 +142,7 @@ zs5：
 
 ```
 转换: 2 HalfModule → 1 Module
-分配: requestedModules(1) < 4, 从M0开始
+分配: requestedModules(1) < 4, 在Unit内连续分配
 结果: U0.M0 → [U0.HM0, U0.HM1]
 ```
 
@@ -194,9 +202,9 @@ zs5：
 可用设备: U0.HM0(缺少U0.HM1，U0.M0不完整), U0.HM2, U0.HM3(U0.M1完整), U1.HM0, U1.HM1(U1.M0完整)
 
 ```
-申请: 2 HalfModule → 1 Module, < 4规则，从M0开始
-      U0.M0不完整，不可用；U1.M0完整，可用
-结果: [U1.HM0, U1.HM1]
+申请: 2 HalfModule → 1 Module, < 4规则
+      U0.M0不完整，不可用；U0.M1完整可用（<4不要求M0起），优先选U0.M1
+结果: [U0.HM2, U0.HM3]
 ```
 
 #### 示例8: < 4规则不要求从M0开始
@@ -217,6 +225,30 @@ zs5：
 申请: 4 HalfModule → 2 Module, < 4规则
       M3和M0视为相邻连续，从M3开始回转到M0
 结果: [U0.HM6, U0.HM7, U0.HM0, U0.HM1]
+```
+
+#### 示例10: 非倍数请求数量（截取输出）
+
+可用设备: U0(U0.HM0~U0.HM7)
+
+```
+申请: 3 HalfModule（不是2的倍数）
+转换: ceil(3/2) = 2 Module
+分配: 2个Module (U0.M0, U0.M1)
+转换名称: [U0.HM0, U0.HM1, U0.HM2, U0.HM3] (4个)
+截取: 取前3个 → [U0.HM0, U0.HM1, U0.HM2]
+```
+
+#### 示例11: zs5非倍数请求数量
+
+可用设备: U0(U0.M0.S0~U0.M3.S3)
+
+```
+申请: 6 SubModule（不是4的倍数）
+转换: ceil(6/4) = 2 Module
+分配: 2个Module (U0.M0, U0.M1)
+转换名称: [U0.M0.S0~U0.M0.S3, U0.M1.S0~U0.M1.S3] (8个)
+截取: 取前6个 → [U0.M0.S0, U0.M0.S1, U0.M0.S2, U0.M0.S3, U0.M1.S0, U0.M1.S1]
 ```
 
 ### 错误场景
