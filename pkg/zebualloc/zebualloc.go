@@ -114,7 +114,14 @@ func Allocate(requestedCount int, available []string, sysType SystemType) ([]str
 	}
 
 	// 将Module分配结果转换回设备名称
-	return modulesToNames(allocatedModules, sysType), nil
+	names := modulesToNames(allocatedModules, sysType)
+
+	// 当请求数量不是subPerMod的倍数时，最后一个Module只有部分子模块被需要，截取实际请求数量
+	if len(names) > requestedCount {
+		names = names[:requestedCount]
+	}
+
+	return names, nil
 }
 
 // buildUnitMap 解析可用设备列表，按Unit分组返回可用的Module

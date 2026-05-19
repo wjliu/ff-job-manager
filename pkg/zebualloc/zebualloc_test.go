@@ -419,3 +419,79 @@ func TestAllocate_WrapAround_M3AndM0Only(t *testing.T) {
 		t.Errorf("expected %v, got %v", expected, result)
 	}
 }
+
+func TestAllocate_ZS3_NonMultipleCount(t *testing.T) {
+	avail := makeHalfModuleAvailable(2)
+
+	// 申请1个HalfModule
+	result, err := Allocate(1, avail, ZS3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Errorf("expected 1 HalfModule, got %d: %v", len(result), result)
+	}
+	if result[0] != "U0.HM0" {
+		t.Errorf("expected U0.HM0, got %s", result[0])
+	}
+
+	// 申请3个HalfModule
+	result, err = Allocate(3, avail, ZS3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 3 {
+		t.Errorf("expected 3 HalfModules, got %d: %v", len(result), result)
+	}
+	expected3 := []string{"U0.HM0", "U0.HM1", "U0.HM2"}
+	if !reflect.DeepEqual(result, expected3) {
+		t.Errorf("expected %v, got %v", expected3, result)
+	}
+
+	// 申请5个HalfModule
+	result, err = Allocate(5, avail, ZS3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 5 {
+		t.Errorf("expected 5 HalfModules, got %d: %v", len(result), result)
+	}
+}
+
+func TestAllocate_ZS5_NonMultipleCount(t *testing.T) {
+	avail := makeSubModuleAvailable(2)
+
+	// 申请1个SubModule
+	result, err := Allocate(1, avail, ZS5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Errorf("expected 1 SubModule, got %d: %v", len(result), result)
+	}
+	if result[0] != "U0.M0.S0" {
+		t.Errorf("expected U0.M0.S0, got %s", result[0])
+	}
+
+	// 申请3个SubModule
+	result, err = Allocate(3, avail, ZS5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 3 {
+		t.Errorf("expected 3 SubModules, got %d: %v", len(result), result)
+	}
+	expected3 := []string{"U0.M0.S0", "U0.M0.S1", "U0.M0.S2"}
+	if !reflect.DeepEqual(result, expected3) {
+		t.Errorf("expected %v, got %v", expected3, result)
+	}
+
+	// 申请6个SubModule
+	result, err = Allocate(6, avail, ZS5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 6 {
+		t.Errorf("expected 6 SubModules, got %d: %v", len(result), result)
+	}
+}
