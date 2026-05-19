@@ -9,7 +9,7 @@
 ZeBu是Synopsys的一款用于做芯片验证的硬件仿真系统，其不同型号中的概念如下：
 - zs3或zs4：ZeBu系统由多个Unit组成，每个Unit包含4个Module，每个Module包含两个HalfModule。Unit可以使用U0、U1、U2这样的命名表示，从U0开始命名；Module可以使用U0.M0、U0.M1、U0.M2这样的命名表示，从U0.M0开始命名；HalfModule可以使用U0.HM0、U0.HM1、U0.HM2这样的命名表示，从U0.HM0开始命名。其中U0.HM0和U0.HM1对应组合成U0.M0，依此类推。
 
-- zs5：ZeBu系统由多个Unit组成，每个Unit包含4个Module，每个Module包含四个SubModule。Unit可以使用U0、U1、U2这样的命名表示，从U0开始命名；Module可以使用U0.M0、U0.M1、U0.M2这样的命名表示，从U0.M0开始命名；SubModule可以使用U0.M0.S0、U0.M0.S1、U0.M0.S2这样的命名表>示，从U0.M0.S0开始命名。其中U0.M0.S0、U0.M0.S1、U0.M0.S2、U0.M0.S3对应组合成U0.M0，依此类推。
+- zs5：ZeBu系统由多个Unit组成，每个Unit包含4个Module，每个Module包含四个SubModule。Unit可以使用U0、U1、U2这样的命名表示，从U0开始命名；Module可以使用U0.M0、U0.M1、U0.M2这样的命名表示，从U0.M0开始命名；SubModule可以使用U0.M0.S0、U0.M0.S1、U0.M0.S2、U0.M0.S3这样的命名表示，从U0.M0.S0开始命名。其中U0.M0.S0、U0.M0.S1、U0.M0.S2、U0.M0.S3对应组合成U0.M0，依此类推。
 
 ## 输入
 
@@ -32,10 +32,189 @@ zs5：
 ## 分配规则
 
 在实际分配时应遵守如下规则：
-1. 当HalfModule或者SubModule的申请数量转换成Module数量后大于4时，应保证前面N个4的倍数的数量部分都是分配完整的Unit，后面不足4个的Module可以在任意的Unit内的任一个Module开始分配，不限制必须在M0的位置开始分配
+1. 当HalfModule或者SubModule的申请数量转换成Module数量后大于等于4时，应保证前面N个4的倍数的数量部分都是分配完整的Unit，后面不足4个的Module可以在任意的Unit内的任一个Module开始分配，不限制必须在M0的位置开始分配
 2. 在1的基础上分配时，应保证Unit之间的Module分配可以不连续，即分配完U0后，不用必须在U1上分配，可以跳到U2或者其他Unit上分配
 3. 在1的基础上分配时，应保证Unit之内的Module分配必须是连续的，即从U0.M0分配完后，必须连续分配U0.M1，不能直接跳到U0.M2
 4. 当HalfModule或者SubModule的申请数量转换成Module数量后小于4时，应保证Module的分配是从某个U的M0开始分配且保证连续
 
+## 分配机制
 
+### 整体流程
 
+```
+输入: requestedCount, available[], sysType
+  │
+  ├─ 1. 参数校验（数量 > 0, 列表非空）
+  │
+  ├─ 2. 子模块数量 → Module数量转换
+  │     requestedModules = ceil(requestedCount / subModulesPerModule)
+  │
+  ├─ 3. 构建Unit-Module映射（buildUnitMap）
+  │     解析可用设备 → 按Unit分组 → 过滤不完整Module
+  │
+  ├─ 4. 检查可用Module总数是否 >= 请求Module数
+  │
+  ├─ 5. 执行Module维度分配（allocateModules）
+  │     ├─ requestedModules >= 4: 优先分配完整Unit → 分配剩余Module
+  │     └─ requestedModules < 4:  从某Unit的M0开始连续分配
+  │
+  └─ 6. 将分配结果转换为设备名称输出
+```
+
+### 步骤详解
+
+#### 步骤1: 子模块到Module的转换
+
+根据系统类型确定每个Module包含的子模块数量：
+
+| 系统类型 | 子模块类型 | 每个Module包含的子模块数 |
+|---------|-----------|----------------------|
+| zs3     | HalfModule | 2                    |
+| zs4     | HalfModule | 2                    |
+| zs5     | SubModule  | 4                    |
+
+转换公式：`requestedModules = ceil(requestedCount / subModulesPerModule)`
+
+例如：zs3系统申请6个HalfModule → 6/2 = 3个Module；申请5个HalfModule → ceil(5/2) = 3个Module。
+
+#### 步骤2: 构建Unit-Module映射
+
+解析可用设备列表，按Unit分组，并过滤掉不完整的Module：
+
+1. 遍历可用设备列表，解析每个设备名称，提取Unit索引和Module索引
+2. 按Unit索引分组，在每个Unit内按Module索引收集子模块
+3. **完整性过滤**：只有当一个Module内的所有子模块都可用时，该Module才算可用。例如zs3中U0.HM0和U0.HM1都存在，U0.M0才算可用；若只有U0.HM0，则U0.M0不可用
+4. 按Unit索引排序，每个Unit内的Module索引也排序
+
+#### 步骤3: Module维度分配
+
+根据请求的Module数量，分配过程分为两种情况：
+
+**情况A: requestedModules >= 4**
+
+```
+1. 计算需要分配的完整Unit数: completeUnits = requestedModules / 4
+2. 计算剩余Module数:         remaining = requestedModules % 4
+
+3. 分配完整Unit（按Unit索引从小到大）:
+   遍历Unit映射，寻找满足以下条件的Unit:
+   - 该Unit有4个可用Module
+   - 4个Module从M0开始连续（即M0, M1, M2, M3均可用）
+   找到后，将该Unit的全部4个Module标记为已分配
+   重复直到分配完 completeUnits 个完整Unit
+
+4. 若 remaining > 0，分配剩余Module:
+   在任意Unit内寻找连续 remaining 个未分配的Module
+   无需从M0开始，只要在Unit内连续即可
+```
+
+**情况B: requestedModules < 4**
+
+```
+遍历Unit映射，寻找满足以下条件的Unit:
+- 该Unit的M0可用
+- 从M0开始有连续 requestedModules 个可用Module
+找到后，分配这些Module
+```
+
+#### 步骤4: 结果转换
+
+将分配的Module列表按系统类型转换回设备名称：
+
+- zs3/zs4: Module `U{u}.M{m}` → `U{u}.HM{m*2}`, `U{u}.HM{m*2+1}`
+- zs5: Module `U{u}.M{m}` → `U{u}.M{m}.S0`, `U{u}.M{m}.S1`, `U{u}.M{m}.S2`, `U{u}.M{m}.S3`
+
+### 分配示例
+
+#### 示例1: zs3 申请2个HalfModule（1个Module，< 4规则）
+
+可用设备: U0(U0.HM0~U0.HM7), U1(U1.HM0~U1.HM7)
+
+```
+转换: 2 HalfModule → 1 Module
+分配: requestedModules(1) < 4, 从M0开始
+结果: U0.M0 → [U0.HM0, U0.HM1]
+```
+
+#### 示例2: zs3 申请8个HalfModule（4个Module，= 4规则）
+
+可用设备: U0(U0.HM0~U0.HM7), U1(U1.HM0~U1.HM7)
+
+```
+转换: 8 HalfModule → 4 Module
+分配: 1个完整Unit
+结果: U0.M0~U0.M3 → [U0.HM0, U0.HM1, U0.HM2, U0.HM3, U0.HM4, U0.HM5, U0.HM6, U0.HM7]
+```
+
+#### 示例3: zs3 申请10个HalfModule（5个Module，>= 4规则）
+
+可用设备: U0(U0.HM0~U0.HM7), U1(U1.HM0~U1.HM7)
+
+```
+转换: 10 HalfModule → 5 Module
+分配: 1个完整Unit(U0) + 1个剩余Module(U1.M0)
+结果: [U0.HM0~U0.HM7, U1.HM0, U1.HM1]
+```
+
+#### 示例4: zs5 申请16个SubModule（4个Module，= 4规则）
+
+可用设备: U0(U0.M0.S0~U0.M3.S3), U1(U1.M0.S0~U1.M3.S3)
+
+```
+转换: 16 SubModule → 4 Module
+分配: 1个完整Unit(U0)
+结果: U0.M0~U0.M3 → [U0.M0.S0~U0.M0.S3, U0.M1.S0~U0.M1.S3, U0.M2.S0~U0.M2.S3, U0.M3.S0~U0.M3.S3]
+```
+
+#### 示例5: Unit跳选（非连续Unit）
+
+可用设备: U1(U1.HM0~U1.HM7), U3(U3.HM0~U3.HM7)，U0和U2不可用
+
+```
+申请: 8 HalfModule → 4 Module → 1个完整Unit
+分配: U1满足完整Unit条件，跳过U0直接选U1
+结果: [U1.HM0~U1.HM7]
+```
+
+#### 示例6: 剩余Module从非M0位置分配
+
+可用设备: U0(U0.HM0~U0.HM7), U1(仅U1.HM2, U1.HM3，即U1.M1)
+
+```
+申请: 10 HalfModule → 5 Module
+分配: 1个完整Unit(U0) + 1个剩余Module
+      U1中M0不可用，但M1可用，剩余1个Module可从M1开始分配
+结果: [U0.HM0~U0.HM7, U1.HM2, U1.HM3]
+```
+
+#### 示例7: 不完整Module被过滤
+
+可用设备: U0.HM0(缺少U0.HM1，U0.M0不完整), U0.HM2, U0.HM3(U0.M1完整), U1.HM0, U1.HM1(U1.M0完整)
+
+```
+申请: 2 HalfModule → 1 Module, < 4规则，从M0开始
+      U0.M0不完整，不可用；U1.M0完整，可用
+结果: [U1.HM0, U1.HM1]
+```
+
+#### 示例8: < 4规则必须从M0开始
+
+可用设备: U0.HM2, U0.HM3(U0.M1), U1.HM0, U1.HM1(U1.M0)
+
+```
+申请: 2 HalfModule → 1 Module, < 4规则
+      U0.M1不从M0开始，跳过；U1.M0从M0开始，可选
+结果: [U1.HM0, U1.HM1]
+```
+
+### 错误场景
+
+| 场景 | 错误信息 |
+|-----|---------|
+| 请求数量 <= 0 | `requested count must be positive, got {n}` |
+| 可用设备列表为空 | `no available devices` |
+| 可用Module总数不足 | `not enough modules: requested {n}, available {m}` |
+| 完整Unit不足 | `not enough complete units: need {n} more` |
+| < 4规则下无M0起始的连续Module | `cannot allocate {n} consecutive modules from M0` |
+| >= 4规则下剩余Module无法在任意Unit内连续分配 | `cannot allocate {n} consecutive modules in any unit` |
+| 设备名称格式无效 | `invalid HalfModule name: {name}` 或 `invalid SubModule name: {name}` |
