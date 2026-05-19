@@ -1,0 +1,29 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Go workspace
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
