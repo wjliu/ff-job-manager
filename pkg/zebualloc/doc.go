@@ -6,6 +6,6 @@
 // 分配规则:
 //   - 当Module数量大于等于4时，优先分配完整的Unit，剩余Module可在任意Unit内连续分配
 //   - Unit之间的Module分配可以不连续
-//   - Unit内的Module分配必须连续
-//   - 当Module数量小于4时，必须从某个Unit的M0开始连续分配
+//   - Unit内的Module分配必须连续（支持M3→M0回转）
+//   - 当Module数量小于4时，必须在某个Unit内连续分配（支持M3→M0回转）
 package zebualloc

@@ -209,16 +209,16 @@ func allocateModules(requestedModules int, unitMap []unitModules) ([]moduleUnit,
 		}
 
 		if remaining > 0 {
-			// 剩余Module从任意可用Unit内分配，需连续但不要求从M0开始
-			remainingMods, err := allocateRemaining(remaining, unitMap, allocated, false)
+			// 剩余Module从任意可用Unit内分配，需连续（支持M3→M0回转）
+			remainingMods, err := allocateRemaining(remaining, unitMap, allocated)
 			if err != nil {
 				return nil, err
 			}
 			allocated = append(allocated, remainingMods...)
 		}
 	} else {
-		// Module数 < 4: 必须从某个Unit的M0开始连续分配
-		remainingMods, err := allocateRemaining(requestedModules, unitMap, nil, true)
+		// Module数 < 4: 在某个Unit内连续分配（支持M3→M0回转）
+		remainingMods, err := allocateRemaining(requestedModules, unitMap, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -251,79 +251,42 @@ func isAlreadyAllocated(allocated []moduleUnit, unitIdx, modIdx int) bool {
 	return false
 }
 
-// allocateRemaining 分配剩余的Module
-// fromM0: 是否必须从M0开始
-func allocateRemaining(count int, unitMap []unitModules, allocated []moduleUnit, fromM0 bool) ([]moduleUnit, error) {
+// allocateRemaining 分配剩余的Module，在Unit内连续分配（支持M3→M0回转）
+func allocateRemaining(count int, unitMap []unitModules, allocated []moduleUnit) ([]moduleUnit, error) {
 	for _, um := range unitMap {
-		// 在此Unit中寻找连续的可用Module
-		startIdx := 0
-		if fromM0 {
-			// 必须从M0开始
-			if len(um.modules) == 0 || um.modules[0] != 0 {
+		// 尝试从每个可用Module作为起点，寻找连续count个Module（支持回转）
+		for startIdx, startMod := range um.modules {
+			if isAlreadyAllocated(allocated, um.unitIndex, startMod) {
 				continue
 			}
-			startIdx = 0
-		} else {
-			// 可以从任意位置开始
-			startIdx = -1
-			for i := 0; i <= len(um.modules)-count; i++ {
-				// 检查从um.modules[i]开始是否有count个连续且未被分配的Module
-				if checkConsecutive(um.modules, i, count, allocated, um.unitIndex) {
-					startIdx = i
-					break
-				}
-			}
-			if startIdx == -1 {
-				continue
+			result := tryConsecutiveWrap(um.modules, startIdx, count, allocated, um.unitIndex)
+			if result != nil {
+				return result, nil
 			}
 		}
-
-		// 尝试从startIdx开始分配count个连续Module
-		var result []moduleUnit
-		modIdx := um.modules[startIdx]
-		allocatedCount := 0
-
-		for allocatedCount < count {
-			if isAlreadyAllocated(allocated, um.unitIndex, modIdx) {
-				break
-			}
-			if !containsModule(um.modules, modIdx) {
-				break
-			}
-			result = append(result, moduleUnit{unitIndex: um.unitIndex, moduleIndex: modIdx})
-			allocatedCount++
-			modIdx++
-		}
-
-		if allocatedCount == count {
-			return result, nil
-		}
-	}
-
-	if fromM0 {
-		return nil, fmt.Errorf("cannot allocate %d consecutive modules from M0", count)
 	}
 	return nil, fmt.Errorf("cannot allocate %d consecutive modules in any unit", count)
 }
 
-// checkConsecutive 检查从modules[startPos]开始是否有count个连续且未被分配的Module
-func checkConsecutive(modules []int, startPos, count int, allocated []moduleUnit, unitIndex int) bool {
-	expectedModIdx := modules[startPos]
-	j := startPos
+// tryConsecutiveWrap 尝试从modules[startIdx]开始分配count个连续Module（支持M3→M0回转）
+func tryConsecutiveWrap(modules []int, startIdx, count int, allocated []moduleUnit, unitIndex int) []moduleUnit {
+	var result []moduleUnit
+	modIdx := modules[startIdx]
+
 	for i := 0; i < count; i++ {
-		if j >= len(modules) {
-			return false
+		// 回转: M3之后回到M0
+		wrappedModIdx := modIdx % modulesPerUnit
+		if isAlreadyAllocated(allocated, unitIndex, wrappedModIdx) {
+			return nil
 		}
-		if modules[j] != expectedModIdx {
-			return false
+		if !containsModule(modules, wrappedModIdx) {
+			return nil
 		}
-		if isAlreadyAllocated(allocated, unitIndex, expectedModIdx) {
-			return false
-		}
-		expectedModIdx++
-		j++
+		result = append(result, moduleUnit{unitIndex: unitIndex, moduleIndex: wrappedModIdx})
+		modIdx = wrappedModIdx + 1
 	}
-	return true
+
+	return result
 }
 
 // containsModule 检查Module列表中是否包含指定索引

@@ -192,19 +192,19 @@ func TestAllocate_InvalidSubModuleName(t *testing.T) {
 }
 
 func TestAllocate_IncompleteModuleNotUsed(t *testing.T) {
-	// U0.M0不完整(只有HM0), U1.M0完整
+	// U0.M0不完整(只有HM0), U0.M1完整, U1.M0完整
 	avail := []string{
 		"U0.HM0",          // U0.M0不完整, 缺少HM1
 		"U0.HM2", "U0.HM3", // U0.M1完整
 		"U1.HM0", "U1.HM1", // U1.M0完整
 	}
-	// 申请2个HalfModule = 1个Module, <4规则: 必须从M0开始
-	// U0.M0不完整不可用, 应选U1.M0
+	// 申请2个HalfModule = 1个Module, <4规则: 不要求从M0开始
+	// U0.M0不完整不可用, U0.M1完整可用（<4不要求M0起），优先选U0.M1
 	result, err := Allocate(2, avail, ZS3)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expected := []string{"U1.HM0", "U1.HM1"}
+	expected := []string{"U0.HM2", "U0.HM3"}
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("expected %v, got %v", expected, result)
 	}
@@ -235,19 +235,18 @@ func TestAllocate_RemainingFromNonM0(t *testing.T) {
 	}
 }
 
-func TestAllocate_LessThan4MustFromM0(t *testing.T) {
-	// <4规则: 必须从M0开始
-	// U0只有M1可用(M0不可用), U1有M0可用
+func TestAllocate_LessThan4NotFromM0(t *testing.T) {
+	// <4规则: 不要求从M0开始，只要Unit内连续即可
+	// U0只有M1可用(M0不可用)
 	avail := []string{
 		"U0.HM2", "U0.HM3", // U0.M1
-		"U1.HM0", "U1.HM1", // U1.M0
 	}
 	result, err := Allocate(2, avail, ZS3) // 1 Module, <4规则
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// 应该选U1.M0（从M0开始）
-	expected := []string{"U1.HM0", "U1.HM1"}
+	// 应该选U0.M1（不从M0开始也可以）
+	expected := []string{"U0.HM2", "U0.HM3"}
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("expected %v, got %v", expected, result)
 	}
@@ -290,5 +289,133 @@ func TestSystemTypeString(t *testing.T) {
 	}
 	if ZS5.String() != "zs5" {
 		t.Errorf("ZS5.String() = %q, want %q", ZS5.String(), "zs5")
+	}
+}
+
+func TestAllocate_WrapAround_M3ToM0(t *testing.T) {
+	// 回转规则: M3和M0视为连续，M3→M0回转分配
+	// U0只有M3和M0可用（M1,M2不可用）
+	avail := []string{
+		"U0.HM6", "U0.HM7", // U0.M3
+		"U0.HM0", "U0.HM1", // U0.M0
+	}
+	// 申请2个Module，<4规则，M3→M0回转连续
+	result, err := Allocate(4, avail, ZS3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{"U0.HM6", "U0.HM7", "U0.HM0", "U0.HM1"}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("expected %v, got %v", expected, result)
+	}
+}
+
+func TestAllocate_WrapAround_ThreeModulesM2M3M0(t *testing.T) {
+	// 回转: M2→M3→M0 三连
+	avail := []string{
+		"U0.HM4", "U0.HM5", // U0.M2
+		"U0.HM6", "U0.HM7", // U0.M3
+		"U0.HM0", "U0.HM1", // U0.M0
+	}
+	// 申请3个Module (6 HalfModule)
+	result, err := Allocate(6, avail, ZS3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7", "U0.HM0", "U0.HM1"}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("expected %v, got %v", expected, result)
+	}
+}
+
+func TestAllocate_WrapAround_ZS5(t *testing.T) {
+	// zs5回转: M3→M0
+	avail := []string{
+		"U0.M3.S0", "U0.M3.S1", "U0.M3.S2", "U0.M3.S3", // U0.M3
+		"U0.M0.S0", "U0.M0.S1", "U0.M0.S2", "U0.M0.S3", // U0.M0
+	}
+	// 申请2个Module (8 SubModule)
+	result, err := Allocate(8, avail, ZS5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{
+		"U0.M3.S0", "U0.M3.S1", "U0.M3.S2", "U0.M3.S3",
+		"U0.M0.S0", "U0.M0.S1", "U0.M0.S2", "U0.M0.S3",
+	}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("expected %v, got %v", expected, result)
+	}
+}
+
+func TestAllocate_WrapAround_RemainingAfterCompleteUnit(t *testing.T) {
+	// >=4规则: 1个完整Unit + 剩余1个Module回转分配
+	// U1只有M3和M0可用，剩余1个Module可从M3或M0开始
+	avail := []string{
+		// U0完整
+		"U0.HM0", "U0.HM1", "U0.HM2", "U0.HM3",
+		"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7",
+		// U1只有M3和M0可用
+		"U1.HM6", "U1.HM7", // U1.M3
+		"U1.HM0", "U1.HM1", // U1.M0
+	}
+	// 申请5 Module (10 HalfModule): 1完整Unit + 1剩余
+	result, err := Allocate(10, avail, ZS3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 完整Unit U0 + U1.M0 (M0在排序中优先于M3作为起点)
+	expected := []string{
+		"U0.HM0", "U0.HM1", "U0.HM2", "U0.HM3",
+		"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7",
+		"U1.HM0", "U1.HM1",
+	}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("expected %v, got %v", expected, result)
+	}
+}
+
+func TestAllocate_WrapAround_NotEnoughConsecutive(t *testing.T) {
+	// 回转也无法满足: U0只有M1和M3可用，M1和M3不连续（M1→M2→M3缺M2，M3→M0→M1缺M0）
+	avail := []string{
+		"U0.HM2", "U0.HM3", // U0.M1
+		"U0.HM6", "U0.HM7", // U0.M3
+	}
+	// 申请2个Module (4 HalfModule)
+	_, err := Allocate(4, avail, ZS3)
+	if err == nil {
+		t.Fatal("expected error for non-consecutive modules")
+	}
+}
+
+func TestAllocate_WrapAround_M3OnlyStart(t *testing.T) {
+	// M3是唯一能开始连续分配2个Module的起点: M3→M0回转
+	// M0本身不可用，只有M3和M0可用
+	avail := []string{
+		"U0.HM6", "U0.HM7", // U0.M3
+		"U0.M0.S0", // 不合法格式，应该被忽略 — 但这里测试U0只有M3
+	}
+	// U0只有M3可用, 无法分配2个连续Module
+	_, err := Allocate(4, avail, ZS3)
+	if err == nil {
+		t.Fatal("expected error: only M3 available, need 2 consecutive modules")
+	}
+}
+
+func TestAllocate_WrapAround_M3AndM0Only(t *testing.T) {
+	// U0只有M3和M0可用，M3→M0回转，申请2个Module
+	avail := []string{
+		"U0.HM6", "U0.HM7", // U0.M3
+		"U0.HM0", "U0.HM1", // U0.M0
+	}
+	result, err := Allocate(4, avail, ZS3) // 2 Modules
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 从M0开始分配: M0, M1(不可用) — 不行
+	// 从M3开始回转: M3, M0 — 连续
+	expected := []string{"U0.HM6", "U0.HM7", "U0.HM0", "U0.HM1"}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("expected %v, got %v", expected, result)
 	}
 }

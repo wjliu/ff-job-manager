@@ -35,7 +35,8 @@ zs5：
 1. 当HalfModule或者SubModule的申请数量转换成Module数量后大于等于4时，应保证前面N个4的倍数的数量部分都是分配完整的Unit，后面不足4个的Module可以在任意的Unit内的任一个Module开始分配，不限制必须在M0的位置开始分配
 2. 在1的基础上分配时，应保证Unit之间的Module分配可以不连续，即分配完U0后，不用必须在U1上分配，可以跳到U2或者其他Unit上分配
 3. 在1的基础上分配时，应保证Unit之内的Module分配必须是连续的，即从U0.M0分配完后，必须连续分配U0.M1，不能直接跳到U0.M2
-4. 当HalfModule或者SubModule的申请数量转换成Module数量后小于4时，应保证Module的分配是从某个U的M0开始分配且保证连续
+4. 当HalfModule或者SubModule的申请数量转换成Module数量后小于4时，应保证Module的分配是在某个Unit内连续的，不能出现跳过Module的分配
+5. 关于Unit内部的Module连续定义，除了常规的序号连续场景，同时分配到M0和M3这种收尾回转的也算是连续，因此分配时需要注意
 
 ## 分配机制
 
@@ -105,15 +106,16 @@ zs5：
 
 4. 若 remaining > 0，分配剩余Module:
    在任意Unit内寻找连续 remaining 个未分配的Module
-   无需从M0开始，只要在Unit内连续即可
+   无需从M0开始，只要在Unit内连续即可（支持M3→M0回转）
 ```
 
 **情况B: requestedModules < 4**
 
 ```
 遍历Unit映射，寻找满足以下条件的Unit:
-- 该Unit的M0可用
-- 从M0开始有连续 requestedModules 个可用Module
+- 该Unit内有连续 requestedModules 个可用Module
+- 连续分配的起点不限，无需从M0开始
+- 支持M3→M0回转（即M3和M0视为相邻连续）
 找到后，分配这些Module
 ```
 
@@ -197,14 +199,24 @@ zs5：
 结果: [U1.HM0, U1.HM1]
 ```
 
-#### 示例8: < 4规则必须从M0开始
+#### 示例8: < 4规则不要求从M0开始
 
-可用设备: U0.HM2, U0.HM3(U0.M1), U1.HM0, U1.HM1(U1.M0)
+可用设备: U0.HM2, U0.HM3(U0.M1)
 
 ```
 申请: 2 HalfModule → 1 Module, < 4规则
-      U0.M1不从M0开始，跳过；U1.M0从M0开始，可选
-结果: [U1.HM0, U1.HM1]
+      U0.M1不从M0开始，但<4规则不要求从M0开始，可选
+结果: [U0.HM2, U0.HM3]
+```
+
+#### 示例9: M3→M0回转连续分配
+
+可用设备: U0.HM6, U0.HM7(U0.M3), U0.HM0, U0.HM1(U0.M0)
+
+```
+申请: 4 HalfModule → 2 Module, < 4规则
+      M3和M0视为相邻连续，从M3开始回转到M0
+结果: [U0.HM6, U0.HM7, U0.HM0, U0.HM1]
 ```
 
 ### 错误场景
@@ -215,6 +227,6 @@ zs5：
 | 可用设备列表为空 | `no available devices` |
 | 可用Module总数不足 | `not enough modules: requested {n}, available {m}` |
 | 完整Unit不足 | `not enough complete units: need {n} more` |
-| < 4规则下无M0起始的连续Module | `cannot allocate {n} consecutive modules from M0` |
+| < 4规则下无法在任意Unit内找到连续Module（含回转） | `cannot allocate {n} consecutive modules in any unit` |
 | >= 4规则下剩余Module无法在任意Unit内连续分配 | `cannot allocate {n} consecutive modules in any unit` |
 | 设备名称格式无效 | `invalid HalfModule name: {name}` 或 `invalid SubModule name: {name}` |
