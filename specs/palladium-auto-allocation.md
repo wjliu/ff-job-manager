@@ -136,7 +136,9 @@ Cluster约束：
 - **6 < neededLDs <= 18**：起始LD必须是某Cluster的0号LD（即 `ldIndex % 6 == 0`）
 - **neededLDs > 18**（跨Rack）：起始LD必须是某Rack的第一个Cluster的第一个LD（即 `ldIndex % 18 == 0`）
 
-候选起始LD按优先级排序（碎片优先：已用LD多的Rack > Rack LD0 > Cluster LD0 > 其他），**流式遍历**：每个成功的 `tryAllocateLDs` 结果即时检查 TPod，满足即返回，不继续遍历。
+候选起始LD按优先级排序（碎片优先：可用Domain数少的Rack > Rack LD0 > Cluster LD0 > 其他），**流式遍历**：每个成功的 `tryAllocateLDs` 结果即时检查 TPod，满足即返回，不继续遍历。
+
+> 碎片指标使用 **Domain 总数**（而非 LD 数）：各 Rack 内所有可用 Domain 的总数。残缺 LD（部分 Domain 被占用）的 Rack 自然 Domain 数更少，优先被选中填满。
 
 #### 步骤4: TPod 分配（allocateTPods / allocateTPodsInRack）
 

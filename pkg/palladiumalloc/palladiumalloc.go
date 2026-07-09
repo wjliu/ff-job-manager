@@ -350,10 +350,11 @@ func allocateAcrossLDs(neededLDs, remainder int, ldMap []ldDomains, tpodReqs []T
 		}
 	}
 
-	// 预先统计各Rack的可用LD数量，用于碎片感知排序
+	// 预先统计各Rack的可用Domain总数，用于碎片感知排序
+	// 用Domain数而非LD数：残缺LD多的Rack自然Domain数更少，优先填满
 	rackAvailCount := make(map[int]int)
 	for _, ld := range ldMap {
-		rackAvailCount[ld.ldIndex/ldPerRack]++
+		rackAvailCount[ld.ldIndex/ldPerRack] += len(ld.domains)
 	}
 
 	// 按优先级排序候选起始LD（碎片优先：已用LD多的Rack > Rack LD0 > Cluster LD0 > 其他）
