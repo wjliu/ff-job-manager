@@ -509,6 +509,32 @@ func computeRacks(lds []ldDomains) []int {
 	return racks
 }
 
+// AllocateTPods 从指定的Rack列表中分配TPod外设
+//
+// 按顺序尝试每个Rack，找到第一个能独立满足所有TPod需求的Rack（规则4：不跨Rack）。
+//
+// 参数:
+//   - rackIds: 候选Rack编号列表，按优先级排序
+//   - tpodReqs: TPod需求列表，每个需求指定外设类型和数量
+//   - availableTPods: 可用TPod信息，key为RackId，value为ExtType→TPodId数组的映射
+//
+// 返回分配的TPod列表（每个元素包含RackId、TPodId、ExtType）
+func AllocateTPods(rackIds []int, tpodReqs []TPodRequirement, availableTPods map[int]map[string][]int) ([]AllocatedTPod, error) {
+	if len(tpodReqs) == 0 {
+		return nil, fmt.Errorf("TPod requirements must not be empty")
+	}
+	if err := validateTPodReqs(tpodReqs); err != nil {
+		return nil, err
+	}
+	if len(availableTPods) == 0 {
+		return nil, fmt.Errorf("no available TPods provided")
+	}
+	if len(rackIds) == 0 {
+		return nil, fmt.Errorf("rack IDs must not be empty")
+	}
+	return allocateTPods(rackIds, tpodReqs, availableTPods)
+}
+
 // allocateTPods 从Rack列表中找一个能独立满足所有TPod需求的Rack（规则4：不跨Rack）
 func allocateTPods(racks []int, tpodReqs []TPodRequirement, availableTPods map[int]map[string][]int) ([]AllocatedTPod, error) {
 	for _, rackId := range racks {
