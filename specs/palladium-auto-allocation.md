@@ -136,7 +136,7 @@ Cluster约束：
 - **6 < neededLDs <= 18**：起始LD必须是某Cluster的0号LD（即 `ldIndex % 6 == 0`）
 - **neededLDs > 18**（跨Rack）：起始LD必须是某Rack的第一个Cluster的第一个LD（即 `ldIndex % 18 == 0`）
 
-候选起始LD按优先级排序（碎片优先：Rack LD0 > Cluster LD0 > 其他），**流式遍历**：每个成功的 `tryAllocateLDs` 结果即时检查 TPod，满足即返回，不继续遍历。
+候选起始LD按优先级排序（碎片优先：已用LD多的Rack > Rack LD0 > Cluster LD0 > 其他），**流式遍历**：每个成功的 `tryAllocateLDs` 结果即时检查 TPod，满足即返回，不继续遍历。
 
 #### 步骤4: TPod 分配（allocateTPods / allocateTPodsInRack）
 
@@ -283,7 +283,20 @@ Rack 1(LD 18-35) + Rack 2(LD 36)
 结果: [18.0~36.7], Racks=[1, 2]
 ```
 
-#### 示例13: TPod 单Rack满足
+#### 示例13: 碎片优先——部分使用Rack优先于空闲Rack
+
+Rack 0: LD 0-5 已占用, LD 6-17 空闲 (12个可用LD)
+Rack 1: LD 18-35 全部空闲 (18个可用LD)
+
+```
+申请48 Domain = 6 LD, <=6, 需在同一Cluster
+候选排序: Rack 0可用LD少(12) < Rack 1可用LD多(18) → Rack 0优先
+从 LD 6(Rack 0 Cluster 1 LD0) 开始
+结果: [6.0~11.7], Racks=[0]
+（Rack 0已用较多，优先填满；Rack 1保持空闲留给更大需求）
+```
+
+#### 示例14: TPod 单Rack满足
 
 可用Domain: LD 0-5(D0-D7), 全部在 Rack 0
 TPod需求: [{"USB-HDSB", 2}]
@@ -296,7 +309,7 @@ TPod检查: Rack 0满足USB-HDSB x2 → 分配 TPodId 0, 1
 结果: [0.0~0.7], Racks=[0], TPods=[{0,0,"USB-HDSB"},{0,1,"USB-HDSB"}]
 ```
 
-#### 示例14: TPod 第二个候选满足（规则5）
+#### 示例15: TPod 第二个候选满足（规则5）
 
 可用Domain: LD 0(D0-D7, Rack 0), LD 18(D0-D7, Rack 1)
 TPod需求: [{"USB-HDSB", 2}]
@@ -309,7 +322,7 @@ TPod需求: [{"USB-HDSB", 2}]
 结果: [18.0~18.3], Racks=[1], TPods=[{1,0,"USB-HDSB"},{1,1,"USB-HDSB"}]
 ```
 
-#### 示例15: 跨Rack Domain + 单Rack TPod
+#### 示例16: 跨Rack Domain + 单Rack TPod
 
 可用Domain: LD 0-35(D0-D7, Rack 0+1 全部)
 TPod需求: [{"PCI", 1}]
@@ -323,7 +336,7 @@ TPod检查: Rack 0无PCI, Rack 1有PCI x1 → 分配 TPodId 3 from Rack 1
 （Domain跨Rack 0和1，TPod仅在Rack 1中分配，满足规则4）
 ```
 
-#### 示例16: 所有候选都不满足TPod（失败）
+#### 示例17: 所有候选都不满足TPod（失败）
 
 可用Domain: LD 0-5(D0-D7, Rack 0)
 TPod需求: [{"USB-HDSB", 2}]

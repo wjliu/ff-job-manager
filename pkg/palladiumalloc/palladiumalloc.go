@@ -350,13 +350,25 @@ func allocateAcrossLDs(neededLDs, remainder int, ldMap []ldDomains, tpodReqs []T
 		}
 	}
 
-	// 按优先级排序候选起始LD（碎片优先：Rack LD0 > Cluster LD0 > 其他）
+	// 预先统计各Rack的可用LD数量，用于碎片感知排序
+	rackAvailCount := make(map[int]int)
+	for _, ld := range ldMap {
+		rackAvailCount[ld.ldIndex/ldPerRack]++
+	}
+
+	// 按优先级排序候选起始LD（碎片优先：已用LD多的Rack > Rack LD0 > Cluster LD0 > 其他）
 	var sortedCandidates []int
 	for c := range candidatesSet {
 		sortedCandidates = append(sortedCandidates, c)
 	}
 	sort.Ints(sortedCandidates)
 	sort.Slice(sortedCandidates, func(i, j int) bool {
+		ri := sortedCandidates[i] / ldPerRack
+		rj := sortedCandidates[j] / ldPerRack
+		// 碎片优先：可用LD越少的Rack越优先（即已使用越多，优先填满）
+		if rackAvailCount[ri] != rackAvailCount[rj] {
+			return rackAvailCount[ri] < rackAvailCount[rj]
+		}
 		iAtRack := sortedCandidates[i]%ldPerRack == 0
 		jAtRack := sortedCandidates[j]%ldPerRack == 0
 		if iAtRack != jAtRack {
