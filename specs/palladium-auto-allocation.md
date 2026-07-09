@@ -31,7 +31,7 @@ Palladium是Candence的一款用于做芯片验证的硬件仿真系统，其中
 
 在实际分配时应遵守如下规则：
 1. 分配的Domain必须是连续的，当请求的Domain数量小于等于8时，不允许跨LD
-2. 分配的LD必须是连续的，当请求的LD数量小于等于6时，不允许跨Cluster；当请求的LD数量大于6时，必须从某个Cluster的内的第一个LD开始分配；当请求的LD数量大于18，导致跨Rack时，必须从某个Rack的第一个Cluster的第一个LD开始分配
+2. 分配的LD必须是连续的，当请求的LD数量小于等于6时，不允许跨Cluster；当请求的LD数量大于6时，必须从某个Cluster的内的第一个LD开始分配；当请求的LD数量小于等于18时，不允许跨Rack；当请求的LD数量大于18，导致跨Rack时，必须从某个Rack的第一个Cluster的第一个LD开始分配
 3. 分配时在满足规则的情况下，应尽量减少资源碎片问题
 4. 当输入了需要分配的TPod数组时，则必须在满足Domain分配的Rack内同时满足TPod的分配才可以，且TPod的分配不能跨Rack，即便Domain出现了跨Rack的情况，TPod的分配也必须在仅一个Rack中满足才行
 5. 如果在已经成功分配Domain的Rack列表中不能满足TPod的分配，则应该继续向后探查是否后续仍有可以满足Domain成功分配也可能满足TPod分配需求的Rack列表，而不是遇到一次不满足TPod失败就结束分配，应该尝试直到所有Rack全部检查完
@@ -131,9 +131,9 @@ Palladium是Candence的一款用于做芯片验证的硬件仿真系统，其中
 - 最后1个LD（若有余数）必须从D0开始有 `remainder` 个连续可用Domain
 - 最后1个LD若余数为8，也需要完整
 
-Cluster约束：
-- **neededLDs <= 6**：所有LD必须在同一个Cluster内
-- **6 < neededLDs <= 18**：起始LD必须是某Cluster的0号LD（即 `ldIndex % 6 == 0`）
+约束层级：
+- **neededLDs <= 6**：所有LD必须在同一个Cluster内（不跨Cluster），且不跨Rack
+- **6 < neededLDs <= 18**：起始LD必须是某Cluster的0号LD（即 `ldIndex % 6 == 0`），且所有LD必须在同一个Rack内（不跨Rack）
 - **neededLDs > 18**（跨Rack）：起始LD必须是某Rack的第一个Cluster的第一个LD（即 `ldIndex % 18 == 0`）
 
 候选起始LD按优先级排序（碎片优先：可用Domain数少的Rack > Rack LD0 > Cluster LD0 > 其他），**流式遍历**：每个成功的 `tryAllocateLDs` 结果即时检查 TPod，满足即返回，不继续遍历。

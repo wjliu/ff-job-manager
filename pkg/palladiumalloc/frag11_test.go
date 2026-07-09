@@ -106,3 +106,77 @@ func TestAllocate_UserSecondAllocation_OnlyLD1Partial(t *testing.T) {
 		t.Errorf("expected start from LD 6 (Rack 0), got %s", result[0])
 	}
 }
+
+// 13 LD 场景：<=18 LD 时不能跨 Rack
+// Rack 0: LD 0-1 残缺, LD 2-17 完整
+// Rack 1: 仅 LD 29 (1个LD), Cluster 5 不存在
+// Rack 2: LD 36-53 完整
+// 13 LD 从 LD 6 会跨越到 Rack 1 → 应被拒绝 → 应从 Rack 2 开始
+func TestAllocate_13LDs_NoCrossRack(t *testing.T) {
+	var avail []string
+
+	// Rack 1: LD 29
+	for d := 0; d < domainsPerLD; d++ {
+		avail = append(avail, fmt.Sprintf("%d.%d", 29, d))
+	}
+
+	// Rack 0: LD 0 (D1-D7), LD 1 (D4-D7), LD 2-17 (完整)
+	for d := 1; d < domainsPerLD; d++ {
+		avail = append(avail, fmt.Sprintf("%d.%d", 0, d))
+	}
+	for d := 4; d < domainsPerLD; d++ {
+		avail = append(avail, fmt.Sprintf("%d.%d", 1, d))
+	}
+	for ld := 2; ld <= 17; ld++ {
+		for d := 0; d < domainsPerLD; d++ {
+			avail = append(avail, fmt.Sprintf("%d.%d", ld, d))
+		}
+	}
+
+	// Rack 2: LD 36-53 完整
+	for ld := 36; ld <= 53; ld++ {
+		for d := 0; d < domainsPerLD; d++ {
+			avail = append(avail, fmt.Sprintf("%d.%d", ld, d))
+		}
+	}
+
+	// 申请 104 Domain = 13 LD (>6, <=18)
+	result, racks, err := Allocate(104, avail, PZ1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	t.Logf("result[0]=%s, racks=%v", result[0], racks)
+
+	if result[0] != "36.0" {
+		t.Errorf("expected start from LD 36 (Rack 2), got %s", result[0])
+	}
+	if racks[0] != 2 {
+		t.Errorf("expected Rack 2, got %v", racks)
+	}
+}
+
+// 验证 <=18 LD 不能跨Rack 是硬约束
+func TestAllocate_NoCrossRackWhenWithinCapacity(t *testing.T) {
+	// Rack 0: LD 12-17 (Cluster 2 only)
+	// Rack 1: LD 18-23 (Cluster 3 only)
+	// 10 LD (>6, <=18): LD 12起始跨Rack → 拒绝
+	// LD 18起始需要 LD 18-27 → LD 24-27不存在 → 失败
+	var avail []string
+	for ld := 12; ld < 18; ld++ {
+		for d := 0; d < domainsPerLD; d++ {
+			avail = append(avail, fmt.Sprintf("%d.%d", ld, d))
+		}
+	}
+	for ld := 18; ld < 24; ld++ {
+		for d := 0; d < domainsPerLD; d++ {
+			avail = append(avail, fmt.Sprintf("%d.%d", ld, d))
+		}
+	}
+
+	_, _, err := Allocate(80, avail, PZ1)
+	if err == nil {
+		t.Fatal("expected error: cannot fit 10 LDs in a single rack")
+	}
+	t.Logf("expected error: %v", err)
+}

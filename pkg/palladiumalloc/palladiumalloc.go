@@ -434,7 +434,7 @@ func tryAllocateLDs(startLD, neededLDs, remainder int, ldByIndex map[int]ldDomai
 			return nil, false
 		}
 
-		// Cluster约束: <=6 LD时必须在同一Cluster内
+		// Cluster约束: <=6 LD时必须在同一Cluster内，且不能跨Rack
 		if neededLDs <= ldPerCluster {
 			if ld.ldIndex/ldPerCluster != clusterOfStart {
 				return nil, false
@@ -444,6 +444,13 @@ func tryAllocateLDs(startLD, neededLDs, remainder int, ldByIndex map[int]ldDomai
 		// >6 LD时起始必须是Cluster的0号LD
 		if neededLDs > ldPerCluster && i == 0 && ld.ldIndex%ldPerCluster != 0 {
 			return nil, false
+		}
+
+		// Rack约束: <=18 LD时不能跨Rack（能在单Rack内容纳就不跨）
+		if neededLDs <= ldPerRack {
+			if ld.ldIndex/ldPerRack != startLD/ldPerRack {
+				return nil, false
+			}
 		}
 
 		// >18 LD（跨Rack）时起始必须是Rack的第一个Cluster的第一个LD
