@@ -31,7 +31,7 @@ Palladium是Candence的一款用于做芯片验证的硬件仿真系统，其中
 
 在实际分配时应遵守如下规则：
 1. 分配的Domain必须是连续的，当请求的Domain数量小于等于8时，不允许跨LD
-2. 分配的LD必须是连续的，当请求的LD数量小于等于6时，不允许跨Cluster；当请求的LD数量大于6时，必须从某个Cluster的0号LD开始分配
+2. 分配的LD必须是连续的，当请求的LD数量小于等于6时，不允许跨Cluster；当请求的LD数量大于6时，必须从某个Cluster的内的第一个LD开始分配；当请求的LD数量大于18，导致跨Rack时，必须从某个Rack的第一个Cluster的第一个LD开始分配
 3. 分配时在满足规则的情况下，应尽量减少资源碎片问题
 4. 当输入了需要分配的TPod数组时，则必须在满足Domain分配的Rack内同时满足TPod的分配才可以，且TPod的分配不能跨Rack，即便Domain出现了跨Rack的情况，TPod的分配也必须在仅一个Rack中满足才行
 5. 如果在已经成功分配Domain的Rack列表中不能满足TPod的分配，则应该继续向后探查是否后续仍有可以满足Domain成功分配也可能满足TPod分配需求的Rack列表，而不是遇到一次不满足TPod失败就结束分配，应该尝试直到所有Rack全部检查完
@@ -133,9 +133,10 @@ Palladium是Candence的一款用于做芯片验证的硬件仿真系统，其中
 
 Cluster约束：
 - **neededLDs <= 6**：所有LD必须在同一个Cluster内
-- **neededLDs > 6**：起始LD必须是某Cluster的0号LD（即 `ldIndex % 6 == 0`）
+- **6 < neededLDs <= 18**：起始LD必须是某Cluster的0号LD（即 `ldIndex % 6 == 0`）
+- **neededLDs > 18**（跨Rack）：起始LD必须是某Rack的第一个Cluster的第一个LD（即 `ldIndex % 18 == 0`）
 
-候选起始LD按优先级排序（碎片优先：Cluster LD0起始 > 其他），**流式遍历**：每个成功的 `tryAllocateLDs` 结果即时检查 TPod，满足即返回，不继续遍历。
+候选起始LD按优先级排序（碎片优先：Rack LD0 > Cluster LD0 > 其他），**流式遍历**：每个成功的 `tryAllocateLDs` 结果即时检查 TPod，满足即返回，不继续遍历。
 
 #### 步骤4: TPod 分配（allocateTPods / allocateTPodsInRack）
 
@@ -259,17 +260,30 @@ LD 6是Cluster 1 LD0, 从LD 6开始: LD 6-12
 结果: [6.0~12.7], Racks=[0]
 ```
 
-#### 示例11: 跨Rack分配
+#### 示例11: 跨Rack分配（>18 LD，从Rack LD0开始）
 
 可用: LD 0-35(D0-D7)
 
 ```
-申请152 Domain = 19 LD, >6, 从LD 0(Cluster 0 LD0)开始
-LD 0-18, Rack 0(LD 0-17) + Rack 1(LD 18)
+申请152 Domain = 19 LD, >18, 必须从Rack LD0开始
+LD 0 是Rack 0 LD0, 满足 → 分配 LD 0-18
+Rack 0(LD 0-17) + Rack 1(LD 18)
 结果: [0.0~18.7], Racks=[0, 1]
 ```
 
-#### 示例12: TPod 单Rack满足
+#### 示例12: >18 LD 从第二个Rack的LD0开始
+
+可用: LD 6-35(D0-D7), LD 0-5 不可用
+
+```
+申请152 Domain = 19 LD, >18
+候选: Rack 0 LD0 (LD 0) 不可用 → 跳过
+候选: Rack 1 LD0 (LD 18) 可用 → 分配 LD 18-36
+Rack 1(LD 18-35) + Rack 2(LD 36)
+结果: [18.0~36.7], Racks=[1, 2]
+```
+
+#### 示例13: TPod 单Rack满足
 
 可用Domain: LD 0-5(D0-D7), 全部在 Rack 0
 TPod需求: [{"USB-HDSB", 2}]
@@ -282,7 +296,7 @@ TPod检查: Rack 0满足USB-HDSB x2 → 分配 TPodId 0, 1
 结果: [0.0~0.7], Racks=[0], TPods=[{0,0,"USB-HDSB"},{0,1,"USB-HDSB"}]
 ```
 
-#### 示例13: TPod 第二个候选满足（规则5）
+#### 示例14: TPod 第二个候选满足（规则5）
 
 可用Domain: LD 0(D0-D7, Rack 0), LD 18(D0-D7, Rack 1)
 TPod需求: [{"USB-HDSB", 2}]
@@ -295,7 +309,7 @@ TPod需求: [{"USB-HDSB", 2}]
 结果: [18.0~18.3], Racks=[1], TPods=[{1,0,"USB-HDSB"},{1,1,"USB-HDSB"}]
 ```
 
-#### 示例14: 跨Rack Domain + 单Rack TPod
+#### 示例15: 跨Rack Domain + 单Rack TPod
 
 可用Domain: LD 0-35(D0-D7, Rack 0+1 全部)
 TPod需求: [{"PCI", 1}]
@@ -309,7 +323,7 @@ TPod检查: Rack 0无PCI, Rack 1有PCI x1 → 分配 TPodId 3 from Rack 1
 （Domain跨Rack 0和1，TPod仅在Rack 1中分配，满足规则4）
 ```
 
-#### 示例15: 所有候选都不满足TPod（失败）
+#### 示例16: 所有候选都不满足TPod（失败）
 
 可用Domain: LD 0-5(D0-D7, Rack 0)
 TPod需求: [{"USB-HDSB", 2}]
@@ -331,6 +345,7 @@ TPod需求: [{"USB-HDSB", 2}]
 | 单LD内无足够连续Domain | `cannot allocate {n} consecutive domains in any LD` |
 | <=6 LD无法在单Cluster内分配 | `cannot allocate {n} consecutive LDs within a cluster` |
 | >6 LD无法从Cluster LD0开始分配 | `cannot allocate {n} consecutive LDs starting from cluster LD0` |
+| >18 LD无法从Rack LD0开始分配 | `cannot allocate {n} consecutive LDs starting from rack LD0` |
 | Domain名称格式无效 | `invalid Domain name: {name}, expected format like 0.0` |
 | Domain索引超出范围 | `invalid Domain index: {n} in {name}, must be 0-7` |
 | 未知机型 | `unknown machine type: {s}` |

@@ -334,7 +334,12 @@ func allocateAcrossLDs(neededLDs, remainder int, ldMap []ldDomains, tpodReqs []T
 	// 确定起始LD的候选列表
 	candidatesSet := make(map[int]bool)
 	for _, ld := range ldMap {
-		if neededLDs > ldPerCluster {
+		if neededLDs > ldPerRack {
+			// >18 LD（跨Rack）: 起始必须是Rack的第一个Cluster的第一个LD
+			if ld.ldIndex%ldPerRack == 0 {
+				candidatesSet[ld.ldIndex] = true
+			}
+		} else if neededLDs > ldPerCluster {
 			// >6 LD: 起始必须是Cluster的0号LD
 			if ld.ldIndex%ldPerCluster == 0 {
 				candidatesSet[ld.ldIndex] = true
@@ -345,17 +350,22 @@ func allocateAcrossLDs(neededLDs, remainder int, ldMap []ldDomains, tpodReqs []T
 		}
 	}
 
-	// 按优先级排序候选起始LD（碎片优先：Cluster LD0起始 > 其他）
+	// 按优先级排序候选起始LD（碎片优先：Rack LD0 > Cluster LD0 > 其他）
 	var sortedCandidates []int
 	for c := range candidatesSet {
 		sortedCandidates = append(sortedCandidates, c)
 	}
 	sort.Ints(sortedCandidates)
 	sort.Slice(sortedCandidates, func(i, j int) bool {
-		iInCluster := sortedCandidates[i]%ldPerCluster == 0
-		jInCluster := sortedCandidates[j]%ldPerCluster == 0
-		if iInCluster != jInCluster {
-			return iInCluster
+		iAtRack := sortedCandidates[i]%ldPerRack == 0
+		jAtRack := sortedCandidates[j]%ldPerRack == 0
+		if iAtRack != jAtRack {
+			return iAtRack
+		}
+		iAtCluster := sortedCandidates[i]%ldPerCluster == 0
+		jAtCluster := sortedCandidates[j]%ldPerCluster == 0
+		if iAtCluster != jAtCluster {
+			return iAtCluster
 		}
 		return sortedCandidates[i] < sortedCandidates[j]
 	})
@@ -382,6 +392,9 @@ func allocateAcrossLDs(neededLDs, remainder int, ldMap []ldDomains, tpodReqs []T
 	// 所有候选尝试完毕
 	if hasTPod && len(tpodErrors) > 0 {
 		return nil, nil, fmt.Errorf("cannot satisfy TPod requirements in any candidate: %s", strings.Join(tpodErrors, "; "))
+	}
+	if neededLDs > ldPerRack {
+		return nil, nil, fmt.Errorf("cannot allocate %d consecutive LDs starting from rack LD0", neededLDs)
 	}
 	if neededLDs > ldPerCluster {
 		return nil, nil, fmt.Errorf("cannot allocate %d consecutive LDs starting from cluster LD0", neededLDs)
@@ -417,6 +430,11 @@ func tryAllocateLDs(startLD, neededLDs, remainder int, ldByIndex map[int]ldDomai
 
 		// >6 LD时起始必须是Cluster的0号LD
 		if neededLDs > ldPerCluster && i == 0 && ld.ldIndex%ldPerCluster != 0 {
+			return nil, false
+		}
+
+		// >18 LD（跨Rack）时起始必须是Rack的第一个Cluster的第一个LD
+		if neededLDs > ldPerRack && i == 0 && ld.ldIndex%ldPerRack != 0 {
 			return nil, false
 		}
 

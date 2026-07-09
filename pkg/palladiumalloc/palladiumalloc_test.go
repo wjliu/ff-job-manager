@@ -677,26 +677,124 @@ func TestAllocateWithTPod_CrossLDSecondCandidateSatisfiesTPod(t *testing.T) {
 		1: {"USB-HDSB": {0, 1, 2}},
 	}
 
-	// >6 LD, 从Cluster LD0开始
-	// 候选1: LD 0 → Cluster 0 LD0, 但Rack 0无TPod → 跳过
-	// 候选2: LD 6 → Cluster 1 LD0, 仍在Rack 0 → 无TPod → 跳过
-	// 候选3: LD 12 → Cluster 2 LD0, 仍在Rack 0 → 无TPod → 跳过
-	// 候选4: LD 18 → Cluster 3 LD0, Rack 1 → 有TPod → 成功
+	// >6 LD (7 LD), 排序优先Rack LD0
+	// 候选: LD 0(Rack LD0) → LD 0-6, Rack 0, TPod失败 → 跳过
+	// 候选: LD 18(Rack LD0) → LD 18-24, Rack 1, TPod满足 → 成功
 	domains, racks, tpods, err := AllocateWithTPod(56, avail, PZ1, tpodReqs, availableTPods)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// 候选1-3 (LD 0,6,12起始) 都在Rack 0无TPod → 跳过
-	// 候选中的LD 12起始: LD 12-18, Rack 0(12-17) + Rack 1(18), TPod从Rack 1满足
+	// LD 18-24 全部在Rack 1内
 	if len(domains) != 56 {
 		t.Errorf("expected 56 domains, got %d", len(domains))
 	}
-	// Domain跨越Rack 0和Rack 1
-	if !reflect.DeepEqual(racks, []int{0, 1}) {
-		t.Errorf("expected racks [0, 1], got %v", racks)
+	if !reflect.DeepEqual(racks, []int{1}) {
+		t.Errorf("expected racks [1], got %v", racks)
 	}
 	// TPod从Rack 1分配
 	if len(tpods) != 2 || tpods[0].RackId != 1 {
 		t.Errorf("expected 2 TPods from Rack 1, got %v", tpods)
+	}
+}
+
+func TestAllocate_MoreThan18LDsMustStartFromRackLD0(t *testing.T) {
+	// 19 LDs (>18, 跨Rack), 必须从Rack LD0开始
+	// LD 0-35全部可用
+	avail := makeFullAvailable(36)
+	// 申请152 Domain = 19 LD
+	result, racks, err := Allocate(152, avail, PZ1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 152 {
+		t.Errorf("expected 152 domains, got %d", len(result))
+	}
+	// 必须从LD 0开始（Rack 0 LD0）
+	if result[0] != "0.0" {
+		t.Errorf("expected start from LD 0 (Rack LD0), got %s", result[0])
+	}
+	// 跨Rack: Rack 0 (LD 0-17) + Rack 1 (LD 18)
+	expectedRacks := []int{0, 1}
+	if !reflect.DeepEqual(racks, expectedRacks) {
+		t.Errorf("expected racks %v, got %v", expectedRacks, racks)
+	}
+}
+
+func TestAllocate_MoreThan18LDsCannotStartFromNonRackLD0(t *testing.T) {
+	// LD 0-5 不可用 (Rack 0 LD0所在的Cluster 0不可用)
+	// LD 6-17 可用 (Rack 0 剩余), LD 18-36 可用 (Rack 1 LD0 + Rack 2 LD0)
+	var avail []string
+	for ld := 6; ld < 37; ld++ {
+		for d := 0; d < domainsPerLD; d++ {
+			avail = append(avail, fmt.Sprintf("%d.%d", ld, d))
+		}
+	}
+	// 申请152 Domain = 19 LD (>18)
+	// LD 0(Rack 0 LD0)不可用 → 跳过
+	// LD 18(Rack 1 LD0)可用, LD 18-36 19个LD都可用 → 应从LD 18开始
+	result, racks, err := Allocate(152, avail, PZ1)
+	if err != nil {
+		t.Fatalf("should succeed from LD 18 (Rack 1 LD0): %v", err)
+	}
+	if len(result) != 152 {
+		t.Errorf("expected 152 domains, got %d", len(result))
+	}
+	if result[0] != "18.0" {
+		t.Errorf("expected start from LD 18 (Rack 1 LD0), got %s", result[0])
+	}
+	// LD 18-36: Rack 1(18-35) + Rack 2(36)
+	expectedRacks := []int{1, 2}
+	if !reflect.DeepEqual(racks, expectedRacks) {
+		t.Errorf("expected racks [1, 2], got %v", racks)
+	}
+}
+
+func TestAllocate_MoreThan18LDsNoRackLD0Available(t *testing.T) {
+	// 所有Rack LD0 (0, 18, 36...) 都不可用
+	// LD 1-17 (Rack 0, 不含LD 0), LD 19-35 (Rack 1, 不含LD 18)
+	var avail []string
+	for ld := 1; ld < 18; ld++ {
+		for d := 0; d < domainsPerLD; d++ {
+			avail = append(avail, fmt.Sprintf("%d.%d", ld, d))
+		}
+	}
+	for ld := 19; ld < 36; ld++ {
+		for d := 0; d < domainsPerLD; d++ {
+			avail = append(avail, fmt.Sprintf("%d.%d", ld, d))
+		}
+	}
+	// 申请152 Domain = 19 LD (>18)
+	// 没有Rack LD0可用 → 应失败
+	_, _, err := Allocate(152, avail, PZ1)
+	if err == nil {
+		t.Fatal("expected error: must start from Rack LD0 for >18 LDs")
+	}
+}
+
+func TestAllocate_MoreThan18LDsFromSecondRackLD0(t *testing.T) {
+	// LD 18-54可用（Rack 1 LD0=18, Rack 2 LD0=36都可用）
+	var avail []string
+	for ld := 18; ld < 54; ld++ {
+		for d := 0; d < domainsPerLD; d++ {
+			avail = append(avail, fmt.Sprintf("%d.%d", ld, d))
+		}
+	}
+	// 申请152 Domain = 19 LD (>18)
+	// 优先级: LD 18(Rack 1 LD0) > LD 36(Rack 2 LD0)
+	// 应从LD 18开始
+	result, racks, err := Allocate(152, avail, PZ1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 152 {
+		t.Errorf("expected 152 domains, got %d", len(result))
+	}
+	if result[0] != "18.0" {
+		t.Errorf("expected start from LD 18, got %s", result[0])
+	}
+	// LD 18-36: Rack 1(18-35) + Rack 2(36)
+	expectedRacks := []int{1, 2}
+	if !reflect.DeepEqual(racks, expectedRacks) {
+		t.Errorf("expected racks [1, 2], got %v", racks)
 	}
 }
