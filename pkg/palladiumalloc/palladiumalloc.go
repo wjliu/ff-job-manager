@@ -16,9 +16,9 @@ const (
 )
 
 const (
-	domainsPerLD    = 8  // 每个LD包含的Domain数量
-	ldPerCluster    = 6  // 每个Cluster包含的LD数量
-	clustersPerRack = 3  // 每个Rack包含的Cluster数量
+	domainsPerLD    = 8                              // 每个LD包含的Domain数量
+	ldPerCluster    = 6                              // 每个Cluster包含的LD数量
+	clustersPerRack = 3                              // 每个Rack包含的Cluster数量
 	ldPerRack       = ldPerCluster * clustersPerRack // 18
 )
 
@@ -29,6 +29,19 @@ var domainRe = regexp.MustCompile(`^(\d+)\.(\d+)$`)
 type ldDomains struct {
 	ldIndex int
 	domains []int // 可用的Domain索引，已排序
+}
+
+// TPodRequirement 表示一个TPod外设需求
+type TPodRequirement struct {
+	ExtType string // 外设类型，如 "USB-HDSB", "PCI"
+	Number  int    // 需要的该类型外设数量
+}
+
+// AllocatedTPod 表示一个已分配的TPod
+type AllocatedTPod struct {
+	RackId  int    // Rack编号
+	TPodId  int    // TPod编号
+	ExtType string // 外设类型
 }
 
 // String 返回MachineType的字符串表示
@@ -64,17 +77,41 @@ func ParseMachineType(s string) (MachineType, error) {
 //
 // 返回分配的Domain名称列表和涉及的Rack编号列表
 func Allocate(requestedCount int, available []string, machineType MachineType) ([]string, []int, error) {
+	domains, racks, _, err := AllocateWithTPod(requestedCount, available, machineType, nil, nil)
+	return domains, racks, err
+}
+
+// AllocateWithTPod 从可用设备列表中分配指定数量的Domain，同时可选分配TPod外设
+//
+// 参数:
+//   - requestedCount: 需要的Domain数量
+//   - availableDomains: 可用Domain名称列表，格式如 "0.0" (LD编号.Domain编号)
+//   - machineType: 机型(PZ1/PZ2)
+//   - tpodReqs: TPod需求列表，nil或空数组表示不需要TPod分配
+//   - availableTPods: 可用TPod信息，key为RackId，value为ExtType→TPodId数组的映射
+//
+// 返回分配的Domain名称列表、涉及的Rack编号列表和分配的TPod列表
+func AllocateWithTPod(requestedCount int, availableDomains []string, machineType MachineType, tpodReqs []TPodRequirement, availableTPods map[int]map[string][]int) ([]string, []int, []AllocatedTPod, error) {
 	if requestedCount <= 0 {
-		return nil, nil, fmt.Errorf("requested count must be positive, got %d", requestedCount)
+		return nil, nil, nil, fmt.Errorf("requested count must be positive, got %d", requestedCount)
 	}
-	if len(available) == 0 {
-		return nil, nil, fmt.Errorf("no available devices")
+	if len(availableDomains) == 0 {
+		return nil, nil, nil, fmt.Errorf("no available devices")
+	}
+
+	// 校验TPod需求参数
+	if err := validateTPodReqs(tpodReqs); err != nil {
+		return nil, nil, nil, err
+	}
+	hasTPod := len(tpodReqs) > 0
+	if hasTPod && len(availableTPods) == 0 {
+		return nil, nil, nil, fmt.Errorf("no available TPods provided")
 	}
 
 	// 解析可用列表，按LD分组
-	ldMap, err := buildLDMap(available)
+	ldMap, err := buildLDMap(availableDomains)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// 计算所需LD数量和余数
@@ -84,20 +121,22 @@ func Allocate(requestedCount int, available []string, machineType MachineType) (
 		remainder = domainsPerLD // 整除时最后一个LD也需要全部8个
 	}
 
-	// 执行分配
+	// 执行分配（流式：边遍历边检查Domain+TPod，满足即返回）
 	var allocatedLDs []ldDomains
+	var allocatedTPods []AllocatedTPod
 	if neededLDs == 1 {
 		// <=8 Domain: 在单个LD内分配
-		ld, err := allocateWithinLD(requestedCount, ldMap)
+		ld, tpods, err := allocateWithinLD(requestedCount, ldMap, tpodReqs, availableTPods)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		allocatedLDs = []ldDomains{ld}
+		allocatedTPods = tpods
 	} else {
 		// >8 Domain: 跨LD分配
-		allocatedLDs, err = allocateAcrossLDs(neededLDs, remainder, ldMap)
+		allocatedLDs, allocatedTPods, err = allocateAcrossLDs(neededLDs, remainder, ldMap, tpodReqs, availableTPods)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 
@@ -112,7 +151,7 @@ func Allocate(requestedCount int, available []string, machineType MachineType) (
 	// 计算涉及的Rack编号
 	racks := computeRacks(allocatedLDs)
 
-	return names, racks, nil
+	return names, racks, allocatedTPods, nil
 }
 
 // buildLDMap 解析可用Domain列表，按LD分组返回可用的Domain
@@ -152,11 +191,20 @@ func buildLDMap(available []string) ([]ldDomains, error) {
 	return result, nil
 }
 
-// allocateWithinLD 在单个LD内分配指定数量的连续Domain
-// 碎片优先：全局优先从D0开始，其次末尾对齐D7，再次任意连续段
-func allocateWithinLD(count int, ldMap []ldDomains) (ldDomains, error) {
-	// 优先1: 全局搜索从D0开始的LD
+// allocateWithinLD 在单个LD内分配连续Domain，同时可选验证TPod
+//
+// 流式处理：在3个优先级循环中边遍历LD边检查TPod，满足即返回，不收集全部候选。
+// 规则5：若当前LD的TPod不满足，继续尝试下一个LD，而非立即失败。
+func allocateWithinLD(count int, ldMap []ldDomains, tpodReqs []TPodRequirement, availableTPods map[int]map[string][]int) (ldDomains, []AllocatedTPod, error) {
+	hasTPod := len(tpodReqs) > 0
+	seen := make(map[int]bool) // 高优先级已处理的LD不再在低优先级重复
+	var tpodErrors []string
+
+	// 优先级0: 全局搜索从D0开始的LD（碎片最小）
 	for _, ld := range ldMap {
+		if seen[ld.ldIndex] {
+			continue
+		}
 		if len(ld.domains) < count {
 			continue
 		}
@@ -165,12 +213,24 @@ func allocateWithinLD(count int, ldMap []ldDomains) (ldDomains, error) {
 			for i := 0; i < count; i++ {
 				result.domains[i] = i
 			}
-			return result, nil
+			if hasTPod {
+				tpods, err := allocateTPods([]int{ld.ldIndex / ldPerRack}, tpodReqs, availableTPods)
+				if err != nil {
+					tpodErrors = append(tpodErrors, fmt.Sprintf("LD %d (rack %d): %v", ld.ldIndex, ld.ldIndex/ldPerRack, err))
+					seen[ld.ldIndex] = true
+					continue // 规则5: TPod不满足，继续下一个候选
+				}
+				return result, tpods, nil
+			}
+			return result, nil, nil
 		}
 	}
 
-	// 优先2: 全局搜索末尾对齐D7的LD
+	// 优先级1: 全局搜索末尾对齐D7的LD
 	for _, ld := range ldMap {
+		if seen[ld.ldIndex] {
+			continue
+		}
 		if len(ld.domains) < count {
 			continue
 		}
@@ -181,13 +241,25 @@ func allocateWithinLD(count int, ldMap []ldDomains) (ldDomains, error) {
 				for i := 0; i < count; i++ {
 					result.domains[i] = startDom + i
 				}
-				return result, nil
+				if hasTPod {
+					tpods, err := allocateTPods([]int{ld.ldIndex / ldPerRack}, tpodReqs, availableTPods)
+					if err != nil {
+						tpodErrors = append(tpodErrors, fmt.Sprintf("LD %d (rack %d): %v", ld.ldIndex, ld.ldIndex/ldPerRack, err))
+						seen[ld.ldIndex] = true
+						continue // 规则5
+					}
+					return result, tpods, nil
+				}
+				return result, nil, nil
 			}
 		}
 	}
 
-	// 优先3: 全局搜索任意连续段
+	// 优先级2: 全局搜索任意连续段
 	for _, ld := range ldMap {
+		if seen[ld.ldIndex] {
+			continue
+		}
 		if len(ld.domains) < count {
 			continue
 		}
@@ -198,12 +270,24 @@ func allocateWithinLD(count int, ldMap []ldDomains) (ldDomains, error) {
 				for j := 0; j < count; j++ {
 					result.domains[j] = startDom + j
 				}
-				return result, nil
+				if hasTPod {
+					tpods, err := allocateTPods([]int{ld.ldIndex / ldPerRack}, tpodReqs, availableTPods)
+					if err != nil {
+						tpodErrors = append(tpodErrors, fmt.Sprintf("LD %d (rack %d): %v", ld.ldIndex, ld.ldIndex/ldPerRack, err))
+						continue // 规则5
+					}
+					return result, tpods, nil
+				}
+				return result, nil, nil
 			}
 		}
 	}
 
-	return ldDomains{}, fmt.Errorf("cannot allocate %d consecutive domains in any LD", count)
+	// 所有候选尝试完毕
+	if hasTPod && len(tpodErrors) > 0 {
+		return ldDomains{}, nil, fmt.Errorf("cannot satisfy TPod requirements in any LD: %s", strings.Join(tpodErrors, "; "))
+	}
+	return ldDomains{}, nil, fmt.Errorf("cannot allocate %d consecutive domains in any LD", count)
 }
 
 // isConsecutiveFrom 检查从指定Domain开始是否有count个连续Domain可用
@@ -228,42 +312,45 @@ func isFullLD(ld ldDomains) bool {
 	return len(ld.domains) == domainsPerLD && ld.domains[0] == 0 && ld.domains[domainsPerLD-1] == domainsPerLD-1
 }
 
-// allocateAcrossLDs 跨LD分配Domain
-func allocateAcrossLDs(neededLDs, remainder int, ldMap []ldDomains) ([]ldDomains, error) {
+// allocateAcrossLDs 跨LD分配Domain，同时可选验证TPod
+//
+// 流式处理：遍历排序后的起始LD，边尝试分配边检查TPod，满足即返回。
+// 规则5：若当前候选的TPod不满足，继续尝试下一个起始LD。
+func allocateAcrossLDs(neededLDs, remainder int, ldMap []ldDomains, tpodReqs []TPodRequirement, availableTPods map[int]map[string][]int) ([]ldDomains, []AllocatedTPod, error) {
+	hasTPod := len(tpodReqs) > 0
+
 	// 构建ldIndex到ldDomains的快速查找
 	ldByIndex := make(map[int]ldDomains)
 	for _, ld := range ldMap {
 		ldByIndex[ld.ldIndex] = ld
 	}
 
-	// 收集所有可用的LD索引（完整LD或部分LD）
+	// 收集所有可用的LD索引
 	availableLDIndices := make(map[int]bool)
 	for _, ld := range ldMap {
 		availableLDIndices[ld.ldIndex] = true
 	}
 
 	// 确定起始LD的候选列表
-	candidates := make(map[int]bool)
+	candidatesSet := make(map[int]bool)
 	for _, ld := range ldMap {
 		if neededLDs > ldPerCluster {
 			// >6 LD: 起始必须是Cluster的0号LD
 			if ld.ldIndex%ldPerCluster == 0 {
-				candidates[ld.ldIndex] = true
+				candidatesSet[ld.ldIndex] = true
 			}
 		} else {
 			// <=6 LD: 可以从任何LD开始，但需在同一个Cluster内
-			candidates[ld.ldIndex] = true
+			candidatesSet[ld.ldIndex] = true
 		}
 	}
 
-	// 按优先级排序候选起始LD（碎片优先：从Cluster LD0开始）
+	// 按优先级排序候选起始LD（碎片优先：Cluster LD0起始 > 其他）
 	var sortedCandidates []int
-	for c := range candidates {
+	for c := range candidatesSet {
 		sortedCandidates = append(sortedCandidates, c)
 	}
 	sort.Ints(sortedCandidates)
-
-	// 优先从Cluster的LD0开始
 	sort.Slice(sortedCandidates, func(i, j int) bool {
 		iInCluster := sortedCandidates[i]%ldPerCluster == 0
 		jInCluster := sortedCandidates[j]%ldPerCluster == 0
@@ -273,17 +360,33 @@ func allocateAcrossLDs(neededLDs, remainder int, ldMap []ldDomains) ([]ldDomains
 		return sortedCandidates[i] < sortedCandidates[j]
 	})
 
+	// 流式遍历：边尝试分配边检查TPod，满足即返回
+	var tpodErrors []string
 	for _, startLD := range sortedCandidates {
-		result, ok := tryAllocateLDs(startLD, neededLDs, remainder, ldByIndex, availableLDIndices)
-		if ok {
-			return result, nil
+		lds, ok := tryAllocateLDs(startLD, neededLDs, remainder, ldByIndex, availableLDIndices)
+		if !ok {
+			continue
 		}
+		if hasTPod {
+			racks := computeRacks(lds)
+			tpods, err := allocateTPods(racks, tpodReqs, availableTPods)
+			if err != nil {
+				tpodErrors = append(tpodErrors, fmt.Sprintf("start LD %d racks %v: %v", startLD, racks, err))
+				continue // 规则5: TPod不满足，继续下一个候选
+			}
+			return lds, tpods, nil
+		}
+		return lds, nil, nil
 	}
 
-	if neededLDs > ldPerCluster {
-		return nil, fmt.Errorf("cannot allocate %d consecutive LDs starting from cluster LD0", neededLDs)
+	// 所有候选尝试完毕
+	if hasTPod && len(tpodErrors) > 0 {
+		return nil, nil, fmt.Errorf("cannot satisfy TPod requirements in any candidate: %s", strings.Join(tpodErrors, "; "))
 	}
-	return nil, fmt.Errorf("cannot allocate %d consecutive LDs within a cluster", neededLDs)
+	if neededLDs > ldPerCluster {
+		return nil, nil, fmt.Errorf("cannot allocate %d consecutive LDs starting from cluster LD0", neededLDs)
+	}
+	return nil, nil, fmt.Errorf("cannot allocate %d consecutive LDs within a cluster", neededLDs)
 }
 
 // tryAllocateLDs 尝试从startLD开始分配neededLDs个连续LD
@@ -366,6 +469,54 @@ func computeRacks(lds []ldDomains) []int {
 	}
 	sort.Ints(racks)
 	return racks
+}
+
+// allocateTPods 从Rack列表中找一个能独立满足所有TPod需求的Rack（规则4：不跨Rack）
+func allocateTPods(racks []int, tpodReqs []TPodRequirement, availableTPods map[int]map[string][]int) ([]AllocatedTPod, error) {
+	for _, rackId := range racks {
+		rackTPods, ok := availableTPods[rackId]
+		if !ok {
+			continue
+		}
+		tpods, err := allocateTPodsInRack(rackId, tpodReqs, rackTPods)
+		if err != nil {
+			continue
+		}
+		return tpods, nil
+	}
+	return nil, fmt.Errorf("no rack can satisfy all TPod requirements")
+}
+
+// allocateTPodsInRack 在单个Rack内分配TPod
+func allocateTPodsInRack(rackId int, reqs []TPodRequirement, rackTPods map[string][]int) ([]AllocatedTPod, error) {
+	var result []AllocatedTPod
+	for _, req := range reqs {
+		available, ok := rackTPods[req.ExtType]
+		if !ok || len(available) < req.Number {
+			return nil, fmt.Errorf("rack %d cannot satisfy TPod requirement: %s x%d", rackId, req.ExtType, req.Number)
+		}
+		for i := 0; i < req.Number; i++ {
+			result = append(result, AllocatedTPod{
+				RackId:  rackId,
+				TPodId:  available[i],
+				ExtType: req.ExtType,
+			})
+		}
+	}
+	return result, nil
+}
+
+// validateTPodReqs 校验TPod需求参数
+func validateTPodReqs(tpodReqs []TPodRequirement) error {
+	for i, req := range tpodReqs {
+		if req.ExtType == "" {
+			return fmt.Errorf("TPod requirement type must not be empty at index %d", i)
+		}
+		if req.Number <= 0 {
+			return fmt.Errorf("TPod requirement number must be positive, got %d for type %q", req.Number, req.ExtType)
+		}
+	}
+	return nil
 }
 
 // mustAtoi 将字符串转换为整数，调用者保证输入合法
