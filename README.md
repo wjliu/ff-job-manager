@@ -7,7 +7,8 @@
 ```
 ff-job-manager/
 ├── pkg/              # 可被外部项目引用的工具包
-│   └── zebualloc/    # ZeBu设备自动分配
+│   ├── zebualloc/         # ZeBu设备自动分配
+│   └── palladiumalloc/    # Palladium设备自动分配
 ├── docs/             # 项目文档
 ├── specs/            # 工具包的设计文档（实现机制等）
 ├── go.mod            # Go 模块定义
@@ -35,6 +36,33 @@ result, err = zebualloc.Allocate(4, avail5, zebualloc.ZS5)
 ```
 
 分配规则详见 [specs/zebu-auto-allocation.md](specs/zebu-auto-allocation.md)。
+
+### palladiumalloc — Palladium设备自动分配
+
+为作业自动选择Palladium设备，用户声明所需的Domain数量（和可选的TPod外设需求），即可从可用设备列表中返回合适的分配结果。
+
+```go
+import "github.com/wjliu/ff-job-manager/pkg/palladiumalloc"
+
+// 仅分配Domain
+avail := []string{"0.0", "0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7"}
+domains, racks, err := palladiumalloc.Allocate(4, avail, palladiumalloc.PZ1)
+// domains: ["0.0", "0.1", "0.2", "0.3"], racks: [0]
+
+// 同时分配Domain和TPod外设
+tpodReqs := []palladiumalloc.TPodRequirement{
+    {ExtType: "USB-HDSB", Number: 2},
+}
+availableTPods := map[int]map[string][]int{
+    0: {"USB-HDSB": {0, 1, 2}},
+}
+domains, racks, tpods, err := palladiumalloc.AllocateWithTPod(
+    8, avail, palladiumalloc.PZ1, tpodReqs, availableTPods,
+)
+// tpods: [{RackId:0, TPodId:0, ExtType:"USB-HDSB"}, {RackId:0, TPodId:1, ExtType:"USB-HDSB"}]
+```
+
+分配规则详见 [specs/palladium-auto-allocation.md](specs/palladium-auto-allocation.md)。
 
 ## 使用方式
 
