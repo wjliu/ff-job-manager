@@ -778,3 +778,51 @@ func TestFormatEnvVar_ZS4(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, result)
 	}
 }
+
+func TestFormatEnvVar_UserScenario_CompleteUnitFirst(t *testing.T) {
+	// 复现用户场景: zs4机型, U7.M2, U7.M3, U9.M0, U9.M1, U9.M2, U9.M3
+	// 期望: 完整Unit U9.M0 在前, 部分Unit U7.M2 在后
+	avail := []string{
+		// U7: 只有 M2, M3
+		"U7.HM4", "U7.HM5", // U7.M2
+		"U7.HM6", "U7.HM7", // U7.M3
+		// U9: 完整 Unit (M0-M3)
+		"U9.HM0", "U9.HM1", // U9.M0
+		"U9.HM2", "U9.HM3", // U9.M1
+		"U9.HM4", "U9.HM5", // U9.M2
+		"U9.HM6", "U9.HM7", // U9.M3
+	}
+
+	// 申请 12 个 HalfModule = 6 个 Module (>=4 规则: 1 完整 Unit + 2 剩余)
+	allocated, err := Allocate(12, avail, ZS4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Logf("allocated devices: %v", allocated)
+
+	result := FormatEnvVar(allocated, ZS4)
+	t.Logf("FormatEnvVar result: %s", result)
+
+	// 完整 Unit U9.M0 应在前, 部分 Unit U7.M2 应在后
+	expected := "U9.M0,U7.M2"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_UserScenario_U7FirstInInput(t *testing.T) {
+	// 即使 U7 在输入中先出现, 完整 Unit 也应在前面
+	allocated := []string{
+		"U7.HM4", "U7.HM5", "U7.HM6", "U7.HM7",
+		"U9.HM0", "U9.HM1", "U9.HM2", "U9.HM3",
+		"U9.HM4", "U9.HM5", "U9.HM6", "U9.HM7",
+	}
+
+	result := FormatEnvVar(allocated, ZS4)
+	t.Logf("FormatEnvVar result: %s", result)
+
+	expected := "U9.M0,U7.M2"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
