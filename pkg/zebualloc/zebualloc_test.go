@@ -826,3 +826,34 @@ func TestFormatEnvVar_UserScenario_U7FirstInInput(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, result)
 	}
 }
+
+func TestFormatEnvVar_WrapAround_PartialUnit_M3AndM0(t *testing.T) {
+	// 复现: zs4, U7.M0 + U7.M3 (回转), U9.M0-M3 (完整)
+	// 预期: U9.M0,U7.M3 — M3是回转的首个Module (spec rule 3)
+	avail := []string{
+		// U7: M0 和 M3 (回转场景)
+		"U7.HM0", "U7.HM1", // U7.M0
+		"U7.HM6", "U7.HM7", // U7.M3
+		// U9: 完整 Unit
+		"U9.HM0", "U9.HM1", // U9.M0
+		"U9.HM2", "U9.HM3", // U9.M1
+		"U9.HM4", "U9.HM5", // U9.M2
+		"U9.HM6", "U9.HM7", // U9.M3
+	}
+
+	// 申请 12 个 HalfModule = 6 个 Module: 1 完整 Unit + 2 剩余 (M3→M0 回转)
+	allocated, err := Allocate(12, avail, ZS4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Logf("allocated devices: %v", allocated)
+
+	result := FormatEnvVar(allocated, ZS4)
+	t.Logf("FormatEnvVar result: %s", result)
+
+	// 完整 Unit U9.M0 在前, 部分 Unit U7.M3 (回转首个Module) 在后
+	expected := "U9.M0,U7.M3"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
