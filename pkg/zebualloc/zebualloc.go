@@ -361,7 +361,6 @@ type allocatedModInfo struct {
 	unitIndex   int
 	moduleIndex int
 	subModules  map[int]bool // 有哪些子模块被分配
-	firstPos    int          // 在 allocated 数组中首次出现的位置
 	complete    bool         // 该 Module 的所有子模块是否都被分配
 }
 
@@ -371,7 +370,7 @@ func parseAllocatedModules(allocated []string, sysType SystemType) ([]string, ma
 	moduleMap := make(map[string]*allocatedModInfo) // key: "U{u}.M{m}"
 	var modOrder []string                           // 保持 Module 首次出现顺序
 
-	for pos, name := range allocated {
+	for _, name := range allocated {
 		unitIdx, modIdx, subIdx := parseDeviceName(name, sysType)
 		if unitIdx < 0 {
 			continue // 跳过非法名称
@@ -383,7 +382,6 @@ func parseAllocatedModules(allocated []string, sysType SystemType) ([]string, ma
 				unitIndex:   unitIdx,
 				moduleIndex: modIdx,
 				subModules:  make(map[int]bool),
-				firstPos:    pos,
 			}
 			modOrder = append(modOrder, key)
 		}
@@ -424,7 +422,6 @@ func parseDeviceName(name string, sysType SystemType) (unitIdx, modIdx, subIdx i
 type unitAllocData struct {
 	unitIndex int
 	modules   []*allocatedModInfo // 该 Unit 内的 Module，按首次出现顺序
-	firstPos  int                 // 该 Unit 内最早出现的 Module 位置
 }
 
 // groupModulesByUnit 将 Module 按 Unit 分组，保持首次出现顺序
@@ -437,15 +434,10 @@ func groupModulesByUnit(modOrder []string, moduleMap map[string]*allocatedModInf
 		if _, exists := unitMap[mi.unitIndex]; !exists {
 			unitMap[mi.unitIndex] = &unitAllocData{
 				unitIndex: mi.unitIndex,
-				firstPos:  mi.firstPos,
 			}
 			unitOrder = append(unitOrder, mi.unitIndex)
 		}
-		ud := unitMap[mi.unitIndex]
-		if mi.firstPos < ud.firstPos {
-			ud.firstPos = mi.firstPos
-		}
-		ud.modules = append(ud.modules, mi)
+		unitMap[mi.unitIndex].modules = append(unitMap[mi.unitIndex].modules, mi)
 	}
 
 	return unitOrder, unitMap
@@ -466,7 +458,7 @@ func buildEnvVarOutput(unitOrder []int, unitMap map[int]*unitAllocData, sysType 
 			completeUnitSegs = append(completeUnitSegs, fmt.Sprintf("U%d.M0", ud.unitIndex))
 		} else {
 			// 部分 Unit：注入第一个被分配的完整 Module
-			if first := firstCompleteModule(ud.modules); first != nil {
+			if first := firstAllocatedModule(ud.modules); first != nil {
 				partialUnitSegs = append(partialUnitSegs,
 					fmt.Sprintf("U%d.M%d", first.unitIndex, first.moduleIndex))
 			}
@@ -495,14 +487,61 @@ func countCompleteModules(modules []*allocatedModInfo) int {
 	return count
 }
 
-// firstCompleteModule 返回列表中第一个完整 Module，无则返回 nil
-func firstCompleteModule(modules []*allocatedModInfo) *allocatedModInfo {
+// firstAllocatedModule 根据分配语义返回部分 Unit 中第一个被分配的完整 Module。
+//
+// 分配算法保证每个 Unit 内的 Module 是一个连续的环状段。通过找到环上的
+// 缺口（缺失的 Module），缺口之后第一个存在的 Module 即为分配起点。
+// 例如 [M3, M0]：缺口在 M1，M3 是起点；[M0, M1]：缺口在 M2，M0 是起点。
+func firstAllocatedModule(modules []*allocatedModInfo) *allocatedModInfo {
+	// 收集完整 Module 的索引
+	var indices []int
 	for _, mi := range modules {
 		if mi.complete {
+			indices = append(indices, mi.moduleIndex)
+		}
+	}
+	if len(indices) == 0 {
+		return nil
+	}
+
+	sort.Ints(indices)
+
+	// 在环 [M0,M1,M2,M3] 上找缺口，缺口后的第一个 Module 即为分配起点
+	startIdx := findConsecutiveStart(indices)
+	for _, mi := range modules {
+		if mi.complete && mi.moduleIndex == startIdx {
 			return mi
 		}
 	}
 	return nil
+}
+
+// findConsecutiveStart 在环 M0→M1→M2→M3→M0 上找到第一个缺口，
+// 返回缺口后第一个存在的 Module 索引（即连续段的起点）。
+func findConsecutiveStart(indices []int) int {
+	for i := 0; i < modulesPerUnit; i++ {
+		if !containsInt(indices, i) {
+			// i 是缺口，向后（环状）找第一个存在的 Module
+			for j := 1; j <= modulesPerUnit; j++ {
+				candidate := (i + j) % modulesPerUnit
+				if containsInt(indices, candidate) {
+					return candidate
+				}
+			}
+		}
+	}
+	// 无缺口（完整 Unit，4 个 Module 全有），不应从此路径进入
+	return 0
+}
+
+// containsInt 检查切片是否包含指定整数
+func containsInt(slice []int, val int) bool {
+	for _, v := range slice {
+		if v == val {
+			return true
+		}
+	}
+	return false
 }
 
 // appendIncompleteSegs 将不完整 Module 的子模块按排序追加到 segments 中

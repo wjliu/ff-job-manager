@@ -857,3 +857,19 @@ func TestFormatEnvVar_WrapAround_PartialUnit_M3AndM0(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, result)
 	}
 }
+
+func TestFormatEnvVar_WrapAround_M0BeforeM3InInput(t *testing.T) {
+	// U7.HM0 在输入中先于 U7.HM6，但分配语义下 M3 是回转起点
+	// 验证 firstAllocatedModule 用模块索引语义而非输入顺序判断
+	allocated := []string{
+		"U7.HM0", "U7.HM1", // U7.M0 — 输入中先出现
+		"U7.HM6", "U7.HM7", // U7.M3 — 后出现，但是分配起点
+		"U9.HM0", "U9.HM1", "U9.HM2", "U9.HM3",
+		"U9.HM4", "U9.HM5", "U9.HM6", "U9.HM7",
+	}
+	result := FormatEnvVar(allocated, ZS4)
+	expected := "U9.M0,U7.M3"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
