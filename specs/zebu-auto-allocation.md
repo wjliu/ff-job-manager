@@ -262,3 +262,13 @@ zs5：
 | < 4规则下无法在任意Unit内找到连续Module（含回转） | `cannot allocate {n} consecutive modules in any unit` |
 | >= 4规则下剩余Module无法在任意Unit内连续分配 | `cannot allocate {n} consecutive modules in any unit` |
 | 设备名称格式无效 | `invalid HalfModule name: {name}` 或 `invalid SubModule name: {name}` |
+
+## 环境变量注入格式
+
+在基于分配机制成功分配设备后，会将分配的设备信息以环境变量形式注入，但是在注入时构造出的环境变量的格式需要遵守以下规则：
+1. 应尽量以Module的粒度进行格式化，即细粒度的HalfModule或者SubModule应尽可能合并成Module的格式后注入。比如将U0.HM0,U0.HM1合并成U0.M0。
+2. 某个Unit被完整分配时，仅需要注入第一个Module的编号即可，比如U0.M0、U0.M1、U0.M2、U0.M3都被分配了，仅注入U0.M0即可。
+3. 某个Unit被部分分配时，仅需要注入第一个被分配的Module的编号即可，比如U0.M2、U0.M3被分配了，仅注入U0.M2即可。需要注意：如果分配的是U0.M3和U0.M0，则需要注入U0.M3而不是U0.M0，即首尾连接的场景，需要以分配的第一个Module为准，而不是M0。
+4. 如果分配了多个Unit的Module时，应将完整分配的Unit的M0注入放在前面，将零散的Unit的Module注入放在后面，比如分配的是：U0.M2、U0.M3、U1.M0、U1.M1、U1.M2、U1.M3，则应注入U1.M0,U0.M2。
+5. 注入的格式中如果包含多个Ux.My的注入，则应使用逗号拼接。
+6. 需要注意zs3、zs4、zs5中HalfModule和SubModule的格式差异，使得在合并成Module时能够正确处理。

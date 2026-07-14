@@ -335,6 +335,203 @@ func mustAtoi(s string) int {
 	return n
 }
 
+// FormatEnvVar 将分配的设备数组格式化为环境变量注入格式。
+//
+// 根据环境变量注入格式规范，将细粒度的 HalfModule 或 SubModule 尽可能合并为 Module 粒度，
+// 完整 Unit 仅注入 Ux.M0，部分 Unit 注入第一个被分配 Module，并以逗号拼接。
+// 输出顺序：完整 Unit 的 M0 在前，零散 Unit 的 Module 在后。
+//
+// 参数:
+//   - allocated: Allocate 函数返回的设备名称列表
+//   - sysType: 系统类型 (ZS3/ZS4/ZS5)
+//
+// 返回格式化后的字符串，例如 "U1.M0,U0.M2"
+func FormatEnvVar(allocated []string, sysType SystemType) string {
+	if len(allocated) == 0 {
+		return ""
+	}
+
+	modOrder, moduleMap := parseAllocatedModules(allocated, sysType)
+	unitOrder, unitMap := groupModulesByUnit(modOrder, moduleMap)
+	return buildEnvVarOutput(unitOrder, unitMap, sysType)
+}
+
+// allocatedModInfo 记录每个 Module 的分配信息
+type allocatedModInfo struct {
+	unitIndex   int
+	moduleIndex int
+	subModules  map[int]bool // 有哪些子模块被分配
+	firstPos    int          // 在 allocated 数组中首次出现的位置
+	complete    bool         // 该 Module 的所有子模块是否都被分配
+}
+
+// parseAllocatedModules 解析分配的设备名，按 Module 粒度归并并标记完整性
+func parseAllocatedModules(allocated []string, sysType SystemType) ([]string, map[string]*allocatedModInfo) {
+	subPerMod := subModulesPerModule(sysType)
+	moduleMap := make(map[string]*allocatedModInfo) // key: "U{u}.M{m}"
+	var modOrder []string                           // 保持 Module 首次出现顺序
+
+	for pos, name := range allocated {
+		unitIdx, modIdx, subIdx := parseDeviceName(name, sysType)
+		if unitIdx < 0 {
+			continue // 跳过非法名称
+		}
+
+		key := fmt.Sprintf("U%d.M%d", unitIdx, modIdx)
+		if _, exists := moduleMap[key]; !exists {
+			moduleMap[key] = &allocatedModInfo{
+				unitIndex:   unitIdx,
+				moduleIndex: modIdx,
+				subModules:  make(map[int]bool),
+				firstPos:    pos,
+			}
+			modOrder = append(modOrder, key)
+		}
+		moduleMap[key].subModules[subIdx] = true
+	}
+
+	// 标记每个 Module 是否完整（所有子模块都被分配）
+	for _, mi := range moduleMap {
+		mi.complete = len(mi.subModules) == subPerMod
+	}
+
+	return modOrder, moduleMap
+}
+
+// parseDeviceName 解析单个设备名称，返回 unitIndex, moduleIndex, subIndex。
+// 解析失败时 unitIndex 返回 -1。
+func parseDeviceName(name string, sysType SystemType) (unitIdx, modIdx, subIdx int) {
+	if sysType == ZS5 {
+		mu, sIdx, err := parseSubModule(name)
+		if err != nil {
+			return -1, 0, 0
+		}
+		return mu.unitIndex, mu.moduleIndex, sIdx
+	}
+
+	mu, err := parseHalfModule(name)
+	if err != nil {
+		return -1, 0, 0
+	}
+	// 从 HM 名称解析子模块索引: HM0→0, HM1→1, HM2→0, HM3→1, ...
+	if m := halfModuleRe.FindStringSubmatch(name); m != nil {
+		return mu.unitIndex, mu.moduleIndex, mustAtoi(m[2]) % 2
+	}
+	return mu.unitIndex, mu.moduleIndex, 0
+}
+
+// unitAllocData 记录一个 Unit 内的分配信息
+type unitAllocData struct {
+	unitIndex int
+	modules   []*allocatedModInfo // 该 Unit 内的 Module，按首次出现顺序
+	firstPos  int                 // 该 Unit 内最早出现的 Module 位置
+}
+
+// groupModulesByUnit 将 Module 按 Unit 分组，保持首次出现顺序
+func groupModulesByUnit(modOrder []string, moduleMap map[string]*allocatedModInfo) ([]int, map[int]*unitAllocData) {
+	unitMap := make(map[int]*unitAllocData)
+	var unitOrder []int
+
+	for _, key := range modOrder {
+		mi := moduleMap[key]
+		if _, exists := unitMap[mi.unitIndex]; !exists {
+			unitMap[mi.unitIndex] = &unitAllocData{
+				unitIndex: mi.unitIndex,
+				firstPos:  mi.firstPos,
+			}
+			unitOrder = append(unitOrder, mi.unitIndex)
+		}
+		ud := unitMap[mi.unitIndex]
+		if mi.firstPos < ud.firstPos {
+			ud.firstPos = mi.firstPos
+		}
+		ud.modules = append(ud.modules, mi)
+	}
+
+	return unitOrder, unitMap
+}
+
+// buildEnvVarOutput 构建最终的环境变量注入字符串
+func buildEnvVarOutput(unitOrder []int, unitMap map[int]*unitAllocData, sysType SystemType) string {
+	var completeUnitSegs []string
+	var partialUnitSegs []string
+	var incompleteSegs []string
+
+	for _, unitIdx := range unitOrder {
+		ud := unitMap[unitIdx]
+		completeCount := countCompleteModules(ud.modules)
+
+		if completeCount == modulesPerUnit {
+			// 完整 Unit：仅注入 Ux.M0
+			completeUnitSegs = append(completeUnitSegs, fmt.Sprintf("U%d.M0", ud.unitIndex))
+		} else {
+			// 部分 Unit：注入第一个被分配的完整 Module
+			if first := firstCompleteModule(ud.modules); first != nil {
+				partialUnitSegs = append(partialUnitSegs,
+					fmt.Sprintf("U%d.M%d", first.unitIndex, first.moduleIndex))
+			}
+			// 不完整的 Module 保持独立设备名格式
+			incompleteSegs = appendIncompleteSegs(incompleteSegs, ud.modules, sysType)
+		}
+	}
+
+	// 组合输出：完整 Unit 在前，部分 Unit 次之，独立设备名最后
+	var allSegs []string
+	allSegs = append(allSegs, completeUnitSegs...)
+	allSegs = append(allSegs, partialUnitSegs...)
+	allSegs = append(allSegs, incompleteSegs...)
+
+	return strings.Join(allSegs, ",")
+}
+
+// countCompleteModules 统计完整 Module 的数量
+func countCompleteModules(modules []*allocatedModInfo) int {
+	count := 0
+	for _, mi := range modules {
+		if mi.complete {
+			count++
+		}
+	}
+	return count
+}
+
+// firstCompleteModule 返回列表中第一个完整 Module，无则返回 nil
+func firstCompleteModule(modules []*allocatedModInfo) *allocatedModInfo {
+	for _, mi := range modules {
+		if mi.complete {
+			return mi
+		}
+	}
+	return nil
+}
+
+// appendIncompleteSegs 将不完整 Module 的子模块按排序追加到 segments 中
+func appendIncompleteSegs(segs []string, modules []*allocatedModInfo, sysType SystemType) []string {
+	for _, mi := range modules {
+		if mi.complete {
+			continue
+		}
+		// 按子模块索引排序输出，保证确定性
+		subIdxList := make([]int, 0, len(mi.subModules))
+		for s := range mi.subModules {
+			subIdxList = append(subIdxList, s)
+		}
+		sort.Ints(subIdxList)
+		for _, subIdx := range subIdxList {
+			segs = append(segs, formatSubDevice(mi.unitIndex, mi.moduleIndex, subIdx, sysType))
+		}
+	}
+	return segs
+}
+
+// formatSubDevice 根据系统类型格式化单个子模块设备名
+func formatSubDevice(unitIdx, modIdx, subIdx int, sysType SystemType) string {
+	if sysType == ZS5 {
+		return fmt.Sprintf("U%d.M%d.S%d", unitIdx, modIdx, subIdx)
+	}
+	return fmt.Sprintf("U%d.HM%d", unitIdx, modIdx*2+subIdx)
+}
+
 // String 返回SystemType的字符串表示
 func (s SystemType) String() string {
 	switch s {

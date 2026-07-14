@@ -194,7 +194,7 @@ func TestAllocate_InvalidSubModuleName(t *testing.T) {
 func TestAllocate_IncompleteModuleNotUsed(t *testing.T) {
 	// U0.M0不完整(只有HM0), U0.M1完整, U1.M0完整
 	avail := []string{
-		"U0.HM0",          // U0.M0不完整, 缺少HM1
+		"U0.HM0",           // U0.M0不完整, 缺少HM1
 		"U0.HM2", "U0.HM3", // U0.M1完整
 		"U1.HM0", "U1.HM1", // U1.M0完整
 	}
@@ -493,5 +493,288 @@ func TestAllocate_ZS5_NonMultipleCount(t *testing.T) {
 	}
 	if len(result) != 6 {
 		t.Errorf("expected 6 SubModules, got %d: %v", len(result), result)
+	}
+}
+
+// ========== FormatEnvVar 测试 ==========
+
+func TestFormatEnvVar_Empty(t *testing.T) {
+	result := FormatEnvVar([]string{}, ZS3)
+	if result != "" {
+		t.Errorf("expected empty string, got %q", result)
+	}
+}
+
+func TestFormatEnvVar_SingleModule_ZS3(t *testing.T) {
+	// 分配2个HalfModule = 1个完整Module
+	allocated := []string{"U0.HM0", "U0.HM1"}
+	result := FormatEnvVar(allocated, ZS3)
+	expected := "U0.M0"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_CompleteUnit_ZS3(t *testing.T) {
+	// 分配8个HalfModule = 4个完整Module = 1个完整Unit
+	allocated := []string{
+		"U0.HM0", "U0.HM1", "U0.HM2", "U0.HM3",
+		"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7",
+	}
+	result := FormatEnvVar(allocated, ZS3)
+	expected := "U0.M0"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_CompleteUnit_ZS5(t *testing.T) {
+	// 分配16个SubModule = 4个完整Module = 1个完整Unit
+	allocated := []string{
+		"U0.M0.S0", "U0.M0.S1", "U0.M0.S2", "U0.M0.S3",
+		"U0.M1.S0", "U0.M1.S1", "U0.M1.S2", "U0.M1.S3",
+		"U0.M2.S0", "U0.M2.S1", "U0.M2.S2", "U0.M2.S3",
+		"U0.M3.S0", "U0.M3.S1", "U0.M3.S2", "U0.M3.S3",
+	}
+	result := FormatEnvVar(allocated, ZS5)
+	expected := "U0.M0"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_CompleteUnitPlusPartial(t *testing.T) {
+	// 分配: U1完整Unit, U0部分Module → spec rule 4 example
+	allocated := []string{
+		// U1: 完整 Unit (M0-M3)
+		"U1.HM0", "U1.HM1", "U1.HM2", "U1.HM3",
+		"U1.HM4", "U1.HM5", "U1.HM6", "U1.HM7",
+		// U0: 部分 Unit (M2, M3)
+		"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7",
+	}
+	result := FormatEnvVar(allocated, ZS3)
+	// 完整Unit U1.M0 在前, 部分Unit U0.M2 在后
+	expected := "U1.M0,U0.M2"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_MultipleCompleteUnits(t *testing.T) {
+	// 分配2个完整Unit, U1在前(先出现), U0在后
+	allocated := []string{
+		"U1.HM0", "U1.HM1", "U1.HM2", "U1.HM3",
+		"U1.HM4", "U1.HM5", "U1.HM6", "U1.HM7",
+		"U0.HM0", "U0.HM1", "U0.HM2", "U0.HM3",
+		"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7",
+	}
+	result := FormatEnvVar(allocated, ZS3)
+	expected := "U1.M0,U0.M0"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_PartialUnit_NonZeroStart(t *testing.T) {
+	// 部分Unit从M2开始分配
+	allocated := []string{
+		"U0.HM4", "U0.HM5", // U0.M2
+		"U0.HM6", "U0.HM7", // U0.M3
+	}
+	result := FormatEnvVar(allocated, ZS3)
+	expected := "U0.M2"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_WrapAround_PreserveFirstModule(t *testing.T) {
+	// 回转分配: U0.M3 → U0.M0, M3是第一个分配的Module
+	allocated := []string{
+		"U0.HM6", "U0.HM7", // U0.M3 (first)
+		"U0.HM0", "U0.HM1", // U0.M0
+	}
+	result := FormatEnvVar(allocated, ZS3)
+	// M3是第一个分配的Module, 注入U0.M3而不是U0.M0 (spec rule 3)
+	expected := "U0.M3"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_ZS5_PartialUnit(t *testing.T) {
+	// zs5 部分Unit: M1, M2
+	allocated := []string{
+		"U0.M1.S0", "U0.M1.S1", "U0.M1.S2", "U0.M1.S3",
+		"U0.M2.S0", "U0.M2.S1", "U0.M2.S2", "U0.M2.S3",
+	}
+	result := FormatEnvVar(allocated, ZS5)
+	expected := "U0.M1"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_IncompleteModule_ZS3(t *testing.T) {
+	// 分配3个HalfModule: M0完整, M1不完整(只有HM2)
+	allocated := []string{
+		"U0.HM0", "U0.HM1", // U0.M0 完整
+		"U0.HM2", // U0.M1 不完整(缺少HM3)
+	}
+	result := FormatEnvVar(allocated, ZS3)
+	// M0合并为U0.M0, 不完整的HM2单独列出
+	expected := "U0.M0,U0.HM2"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_IncompleteModule_ZS5(t *testing.T) {
+	// 分配6个SubModule: M0完整, M1不完整(只有S0,S1)
+	allocated := []string{
+		"U0.M0.S0", "U0.M0.S1", "U0.M0.S2", "U0.M0.S3", // U0.M0 完整
+		"U0.M1.S0", "U0.M1.S1", // U0.M1 不完整(缺少S2,S3)
+	}
+	result := FormatEnvVar(allocated, ZS5)
+	expected := "U0.M0,U0.M1.S0,U0.M1.S1"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_OnlyIncompleteModule_ZS3(t *testing.T) {
+	// 只分配1个HalfModule: 不完整Module
+	allocated := []string{"U0.HM0"}
+	result := FormatEnvVar(allocated, ZS3)
+	expected := "U0.HM0"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_OnlyIncompleteModule_ZS5(t *testing.T) {
+	// 只分配1个SubModule: 不完整Module
+	allocated := []string{"U0.M0.S0"}
+	result := FormatEnvVar(allocated, ZS5)
+	expected := "U0.M0.S0"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_AllIncompleteModules_ZS5(t *testing.T) {
+	// 分配3个SubModule: M0不完整(只有S0,S1,S2)
+	allocated := []string{
+		"U0.M0.S0", "U0.M0.S1", "U0.M0.S2",
+	}
+	result := FormatEnvVar(allocated, ZS5)
+	expected := "U0.M0.S0,U0.M0.S1,U0.M0.S2"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_MultipleUnits_MixedPartial(t *testing.T) {
+	// 两个部分Unit: U0.M2, U0.M3 和 U2.M0
+	allocated := []string{
+		"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7", // U0.M2, U0.M3
+		"U2.HM0", "U2.HM1", // U2.M0
+	}
+	result := FormatEnvVar(allocated, ZS3)
+	// 按首次出现顺序: U0先, U2后
+	expected := "U0.M2,U2.M0"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_EndToEnd_ZS3_10HalfModules(t *testing.T) {
+	// 端到端测试: Allocate → FormatEnvVar
+	avail := makeHalfModuleAvailable(2)
+	allocated, err := Allocate(10, avail, ZS3) // 5 Modules = 1完整Unit + 1部分Module
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := FormatEnvVar(allocated, ZS3)
+	// U0完整 → U0.M0, U1.M0部分 → U1.M0
+	expected := "U0.M0,U1.M0"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_EndToEnd_ZS5_20SubModules(t *testing.T) {
+	// 端到端测试: Allocate → FormatEnvVar
+	avail := makeSubModuleAvailable(2)
+	allocated, err := Allocate(20, avail, ZS5) // 5 Modules = 1完整Unit + 1部分Module
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := FormatEnvVar(allocated, ZS5)
+	expected := "U0.M0,U1.M0"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_EndToEnd_ZS3_NonMultiple(t *testing.T) {
+	// 端到端: 3个HalfModule (非倍数)
+	avail := makeHalfModuleAvailable(2)
+	allocated, err := Allocate(3, avail, ZS3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// allocated = [U0.HM0, U0.HM1, U0.HM2]
+	result := FormatEnvVar(allocated, ZS3)
+	// U0.M0完整, U0.M1不完整(只有HM2)
+	expected := "U0.M0,U0.HM2"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_EndToEnd_ZS5_NonMultiple(t *testing.T) {
+	// 端到端: 6个SubModule (非倍数)
+	avail := makeSubModuleAvailable(2)
+	allocated, err := Allocate(6, avail, ZS5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// allocated = [U0.M0.S0-S3, U0.M1.S0-S1]
+	result := FormatEnvVar(allocated, ZS5)
+	expected := "U0.M0,U0.M1.S0,U0.M1.S1"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_EndToEnd_WrapAround(t *testing.T) {
+	// 端到端: 回转分配 M3→M0
+	avail := []string{
+		"U0.HM6", "U0.HM7", // U0.M3
+		"U0.HM0", "U0.HM1", // U0.M0
+	}
+	allocated, err := Allocate(4, avail, ZS3) // 2 Modules
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := FormatEnvVar(allocated, ZS3)
+	// 分配从M3开始回转, M3在分配顺序中先出现, 所以first是M3 (spec rule 3)
+	expected := "U0.M3"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestFormatEnvVar_ZS4(t *testing.T) {
+	// zs4与zs3使用相同的HalfModule格式
+	allocated := []string{
+		"U0.HM0", "U0.HM1", "U0.HM2", "U0.HM3",
+		"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7",
+	}
+	result := FormatEnvVar(allocated, ZS4)
+	expected := "U0.M0"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
 	}
 }
