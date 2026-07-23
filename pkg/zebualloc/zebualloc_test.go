@@ -873,3 +873,102 @@ func TestFormatEnvVar_WrapAround_M0BeforeM3InInput(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, result)
 	}
 }
+
+// ========== 碎片化减少测试 ==========
+
+func TestAllocate_Fragmentation_LessThan4_PreferFewerModules(t *testing.T) {
+	// <4规则: 多个Unit都能满足，应优先选可用Module数少的Unit
+	// U0: 4个Module全部空闲, U1: 仅M0,M1空闲(2个连续Module)
+	// 申请2个Module，应该选U1而非U0，保留U0完整
+	avail := []string{
+		// U0: 完整 (4 Module)
+		"U0.HM0", "U0.HM1", "U0.HM2", "U0.HM3",
+		"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7",
+		// U1: 只有M0,M1 (2 Module)
+		"U1.HM0", "U1.HM1", "U1.HM2", "U1.HM3",
+	}
+	// 申请4 HalfModule = 2 Module, <4规则
+	result, err := Allocate(4, avail, ZS3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 应选U1 (只有2个Module可用)，而非U0 (有4个Module)
+	expected := []string{"U1.HM0", "U1.HM1", "U1.HM2", "U1.HM3"}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("expected %v, got %v", expected, result)
+	}
+}
+
+func TestAllocate_Fragmentation_Remaining_PreferFewerModules(t *testing.T) {
+	// >=4规则剩余部分: 多个Unit都能满足，应优先选可用Module数少的Unit
+	// U0: 完整, U1: 完整, U2: 仅M0可用
+	// 申请5个Module = 1完整Unit + 1剩余 → 剩余应选U2而非U1
+	avail := []string{
+		// U0: 完整 (4 Module)
+		"U0.HM0", "U0.HM1", "U0.HM2", "U0.HM3",
+		"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7",
+		// U1: 完整 (4 Module)
+		"U1.HM0", "U1.HM1", "U1.HM2", "U1.HM3",
+		"U1.HM4", "U1.HM5", "U1.HM6", "U1.HM7",
+		// U2: 仅M0可用 (1 Module)
+		"U2.HM0", "U2.HM1",
+	}
+	// 申请10 HalfModule = 5 Module, >=4规则
+	result, err := Allocate(10, avail, ZS3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// U0作为完整Unit，剩余1个Module应选U2(1)而非U1(4)
+	expected := []string{
+		"U0.HM0", "U0.HM1", "U0.HM2", "U0.HM3",
+		"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7",
+		"U2.HM0", "U2.HM1",
+	}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("expected %v, got %v", expected, result)
+	}
+}
+
+func TestAllocate_Fragmentation_SameModuleCount(t *testing.T) {
+	// 多个Unit可用Module数相同时，按Unit索引选择（确定性）
+	// U0: 仅M2,M3 (2 Module), U1: 仅M0,M1 (2 Module)
+	avail := []string{
+		// U0: M2, M3
+		"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7",
+		// U1: M0, M1
+		"U1.HM0", "U1.HM1", "U1.HM2", "U1.HM3",
+	}
+	// 申请2个Module, <4规则
+	result, err := Allocate(4, avail, ZS3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 两个Unit都有2个Module，按Unit索引选U0
+	expected := []string{"U0.HM4", "U0.HM5", "U0.HM6", "U0.HM7"}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("expected %v, got %v", expected, result)
+	}
+}
+
+func TestAllocate_Fragmentation_ZS5_PreferFewerModules(t *testing.T) {
+	// zs5 <4规则: 同样优先选Module数少的Unit
+	avail := []string{
+		// U0: 完整 (4 Module)
+		"U0.M0.S0", "U0.M0.S1", "U0.M0.S2", "U0.M0.S3",
+		"U0.M1.S0", "U0.M1.S1", "U0.M1.S2", "U0.M1.S3",
+		"U0.M2.S0", "U0.M2.S1", "U0.M2.S2", "U0.M2.S3",
+		"U0.M3.S0", "U0.M3.S1", "U0.M3.S2", "U0.M3.S3",
+		// U1: 仅M0可用 (1 Module)
+		"U1.M0.S0", "U1.M0.S1", "U1.M0.S2", "U1.M0.S3",
+	}
+	// 申请4 SubModule = 1 Module, <4规则
+	result, err := Allocate(4, avail, ZS5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 应选U1 (1个Module) 而非U0 (4个Module)
+	expected := []string{"U1.M0.S0", "U1.M0.S1", "U1.M0.S2", "U1.M0.S3"}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("expected %v, got %v", expected, result)
+	}
+}

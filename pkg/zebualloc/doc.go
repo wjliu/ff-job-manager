@@ -8,4 +8,5 @@
 //   - Unit之间的Module分配可以不连续
 //   - Unit内的Module分配必须连续（支持M3→M0回转）
 //   - 当Module数量小于4时，必须在某个Unit内连续分配（支持M3→M0回转）
+//   - 减少资源碎片化：当多个Unit都能满足时，优先选可用Module数最少的Unit
 package zebualloc

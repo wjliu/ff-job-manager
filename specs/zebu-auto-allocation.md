@@ -37,6 +37,7 @@ zs5：
 3. 在1的基础上分配时，应保证Unit之内的Module分配必须是连续的，即从U0.M0分配完后，必须连续分配U0.M1，不能直接跳到U0.M2
 4. 当HalfModule或者SubModule的申请数量转换成Module数量后小于4时，应保证Module的分配是在某个Unit内连续的，不能出现跳过Module的分配
 5. 关于Unit内部的Module连续定义，除了常规的序号连续场景，同时分配到M0和M3这种收尾回转的也算是连续，因此分配时需要注意
+6. 减少资源碎片化：当存在多个Unit都能满足分配需求（连续N个Module）时，应优先选择分配后使该Unit内剩余可用Module最少的Unit。即优先消费可用Module数量较少的Unit，尽量保留完整Unit（4个Module全可用）供后续大数量请求使用。若可用Module数量相同，则按Unit索引从小到大选择以保证确定性
 
 ## 分配机制
 

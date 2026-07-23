@@ -258,8 +258,20 @@ func isAlreadyAllocated(allocated []moduleUnit, unitIdx, modIdx int) bool {
 	return false
 }
 
-// allocateRemaining 分配剩余的Module，在Unit内连续分配（支持M3→M0回转）
+// allocateRemaining 分配剩余的Module，在Unit内连续分配（支持M3→M0回转）。
+//
+// 为减少资源碎片化，当存在多个Unit都能满足分配需求时，优先选择可用Module数量
+// 最少的Unit，以尽量保留完整Unit供后续大数量请求使用。若数量相同则按Unit索引
+// 从小到大选择以保证确定性。
 func allocateRemaining(count int, unitMap []unitModules, allocated []moduleUnit) ([]moduleUnit, error) {
+	// 收集所有有效的分配方案
+	type candidate struct {
+		modules    []moduleUnit
+		availCount int // 该Unit的可用Module总数
+		unitIndex  int
+	}
+	var candidates []candidate
+
 	for _, um := range unitMap {
 		// 尝试从每个可用Module作为起点，寻找连续count个Module（支持回转）
 		for startIdx, startMod := range um.modules {
@@ -268,11 +280,31 @@ func allocateRemaining(count int, unitMap []unitModules, allocated []moduleUnit)
 			}
 			result := tryConsecutiveWrap(um.modules, startIdx, count, allocated, um.unitIndex)
 			if result != nil {
-				return result, nil
+				candidates = append(candidates, candidate{
+					modules:    result,
+					availCount: len(um.modules),
+					unitIndex:  um.unitIndex,
+				})
+				break // 同一个Unit找到第一个有效方案即可
 			}
 		}
 	}
-	return nil, fmt.Errorf("cannot allocate %d consecutive modules in any unit", count)
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("cannot allocate %d consecutive modules in any unit", count)
+	}
+
+	// 按碎片化优先级排序:
+	//   - 优先选可用Module数少的Unit（减少碎片，保留完整Unit）
+	//   - 同数量时按Unit索引排序（确定性）
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].availCount != candidates[j].availCount {
+			return candidates[i].availCount < candidates[j].availCount
+		}
+		return candidates[i].unitIndex < candidates[j].unitIndex
+	})
+
+	return candidates[0].modules, nil
 }
 
 // tryConsecutiveWrap 尝试从modules[startIdx]开始分配count个连续Module（支持M3→M0回转）
